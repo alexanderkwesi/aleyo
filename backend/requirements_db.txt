@@ -1,0 +1,6 @@
+SQLAlchemy==2.0.23
+alembic==1.12.1
+psycopg2-binary==2.9.9  # For PostgreSQL
+pymysql==1.1.0  # For MySQL
+asyncpg==0.29.0  # For async PostgreSQL
+greenlet==3.0.1  # Required for SQLAlchemy

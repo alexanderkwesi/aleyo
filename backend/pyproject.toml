@@ -1,0 +1,112 @@
+[project]
+name = "aleyo-website-builder"
+version = "1.0.0"
+description = "AI-powered website builder with voice commands"
+readme = "README.md"
+requires-python = ">=3.14"
+license = {text = "MIT"}
+authors = [
+    {name = "Aleyo Team", email = "team@aleyo.com"}
+]
+keywords = ["fastapi", "ai", "website-builder", "voice-commands"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: OS Independent",
+]
+
+dependencies = [
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.34.0",
+    "pydantic==2.10.4",
+    "pydantic-settings==2.6.1",
+    "websockets==14.1",
+    "python-multipart==0.0.20",
+    "httpx==0.28.1",
+    "aiofiles==24.1.0",
+    "SQLAlchemy==2.0.36",
+    "alembic==1.14.1",
+    "asyncpg==0.30.0",
+    "psycopg2-binary==2.9.10",
+    "pymysql==1.1.1",
+    "greenlet==3.1.1",
+    "python-jose[cryptography]==3.3.0",
+    "passlib[bcrypt]==1.7.4",
+    "bcrypt==4.2.1",
+    "email-validator==2.1.1",  # Corrected package name
+    "python-dotenv==1.0.1",
+    "python-decouple==3.8",
+    "prometheus-client==0.21.0",
+    "python-json-logger==3.1.0",
+    "fastapi-cors==0.0.6",
+    "python-dateutil==2.9.0",
+    "pillow==11.0.0",
+    "jinja2==3.1.4",
+    "tenacity==9.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "pytest-asyncio==0.24.0",
+    "pytest-cov==6.0.0",
+    "pytest-mock==3.14.0",
+    "pytest-timeout==2.3.1",
+    "pytest-xdist==3.6.1",
+    "black==24.10.0",
+    "isort==5.13.2",
+    "flake8==7.1.1",
+    "mypy==1.14.1",
+    "pre-commit==4.0.1",
+]
+
+ai = [
+    "openai==1.55.3",
+    "anthropic==0.39.0",
+    "tiktoken==0.8.0",
+]
+
+worker = [
+    "celery==5.4.0",
+    "redis==5.2.1",
+]
+
+payment = [
+    "stripe==11.4.0",
+]
+
+email = [
+    "sendgrid==6.12.3",
+]
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["backend"]
+
+[tool.black]
+line-length = 100
+target-version = ['py314']
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+line_length = 100
+multi_line_output = 3
+include_trailing_comma = true
+
+[tool.mypy]
+python_version = "3.14"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+asyncio_mode = "auto"
+addopts = "-v --cov=backend --cov-report=term-missing"

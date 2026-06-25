@@ -1,0 +1,95 @@
+.PHONY: help install dev install-dev migrate test lint format clean docker-up docker-down
+
+# Colors
+BLUE := \033[0;34m
+GREEN := \033[0;32m
+RED := \033[0;31m
+NC := \033[0m
+
+help: ## Show this help message
+	@echo '$(BLUE)Aleyo Website Builder Backend Commands$(NC)'
+	@echo ''
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "$(GREEN)%-20s$(NC) %s\n", $$1, $$2}'
+
+install: ## Install dependencies
+	@echo "$(BLUE)Installing dependencies...$(NC)"
+	pip install -r requirements.txt
+	@echo "$(GREEN)✓ Dependencies installed$(NC)"
+
+install-dev: ## Install development dependencies
+	@echo "$(BLUE)Installing development dependencies...$(NC)"
+	pip install -r requirements.txt
+	pip install -r requirements-dev.txt
+	@echo "$(GREEN)✓ Dev dependencies installed$(NC)"
+
+migrate: ## Run database migrations
+	@echo "$(BLUE)Running migrations...$(NC)"
+	alembic upgrade head
+	@echo "$(GREEN)✓ Migrations complete$(NC)"
+
+migrate-create: ## Create a new migration
+	@echo "$(BLUE)Creating migration...$(NC)"
+	alembic revision --autogenerate -m "$(message)"
+	@echo "$(GREEN)✓ Migration created$(NC)"
+
+test: ## Run tests
+	@echo "$(BLUE)Running tests...$(NC)"
+	pytest -v --cov=backend --cov-report=term-missing
+
+test-watch: ## Run tests in watch mode
+	@echo "$(BLUE)Running tests in watch mode...$(NC)"
+	ptw
+
+lint: ## Run linters
+	@echo "$(BLUE)Running linters...$(NC)"
+	flake8 backend
+	mypy backend
+	@echo "$(GREEN)✓ Linting complete$(NC)"
+
+format: ## Format code with black and isort
+	@echo "$(BLUE)Formatting code...$(NC)"
+	isort backend
+	black backend
+	@echo "$(GREEN)✓ Code formatted$(NC)"
+
+clean: ## Clean Python cache files
+	@echo "$(BLUE)Cleaning cache...$(NC)"
+	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+	find . -type f -name "*.pyc" -delete
+	find . -type f -name "*.pyo" -delete
+	find . -type f -name "*.pyd" -delete
+	rm -rf .pytest_cache
+	rm -rf .mypy_cache
+	rm -rf .coverage
+	rm -rf htmlcov
+	rm -rf dist
+	rm -rf build
+	rm -rf *.egg-info
+	@echo "$(GREEN)✓ Cache cleaned$(NC)"
+
+docker-up: ## Start Docker containers
+	@echo "$(BLUE)Starting Docker containers...$(NC)"
+	docker-compose up -d
+	@echo "$(GREEN)✓ Containers started$(NC)"
+
+docker-down: ## Stop Docker containers
+	@echo "$(BLUE)Stopping Docker containers...$(NC)"
+	docker-compose down
+	@echo "$(GREEN)✓ Containers stopped$(NC)"
+
+shell: ## Open Python shell
+	@echo "$(BLUE)Opening Python shell...$(NC)"
+	python manage.py shell
+
+run: ## Run development server
+	@echo "$(BLUE)Starting development server...$(NC)"
+	uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+
+run-prod: ## Run production server
+	@echo "$(BLUE)Starting production server...$(NC)"
+	gunicorn backend.main:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
+
+seed: ## Seed database with initial data
+	@echo "$(BLUE)Seeding database...$(NC)"
+	python scripts/seed_db.py
+	@echo "$(GREEN)✓ Database seeded$(NC)"
