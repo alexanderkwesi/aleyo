@@ -1,4 +1,6 @@
 flask
 anthropic
+pillows
+wheel
 
 
