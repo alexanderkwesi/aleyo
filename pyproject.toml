@@ -10,5 +10,9 @@ dependencies = [
     "passlib[bcrypt]",
     "bcrypt",
     "pyjwt",
-    "pillow==12.2.0"
+    "pillow==12.2.0",
+    "anthropic"
 ]
+
+[tool.setuptools]
+packages = []
