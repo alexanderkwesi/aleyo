@@ -6,7 +6,7 @@
 
     {
 
-      "src": "api/app.py",
+      "src": "backend/app.py",
 
       "use": "@vercel/python"
 
@@ -28,7 +28,7 @@
 
       "src": "/api/(.*)",
 
-      "dest": "api/app.py"
+      "dest": "backend/app.py"
 
     },
 
