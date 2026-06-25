@@ -1,9 +1,0 @@
-fastapi
-uvicorn
-sqlalchemy
-pydantic[email]
-passlib[bcrypt]
-bcrypt
-pyjwt
-Pillow==12.2.0
-anthropic
