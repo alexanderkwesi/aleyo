@@ -1,0 +1,22 @@
+{
+  "short_name": "Aleyo",
+  "name": "Aleyo Website Builder",
+  "description": "Aleyo is an AI-powered website builder that allows you to create stunning websites effortlessly. With Aleyo, you can design, customize, and launch your website in minutes, without any coding skills. Whether you're a small business owner, a freelancer, or just someone looking to create a personal website, Aleyo has got you covered.",
+"icons": [
+    {
+      "src": "logo-1.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "logo-1.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#3B82F6",
+  "background_color": "#0F172A",
+  "orientation": "portrait-primary"
+}

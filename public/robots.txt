@@ -1,0 +1,14 @@
+# Allow all crawlers
+User-agent: *
+Allow: /
+
+# Sitemap location
+Sitemap: https://aleyo.com/sitemap.xml
+
+# Crawl delay
+Crawl-delay: 10
+
+# Disallow admin paths
+Disallow: /admin/
+Disallow: /private/
+Disallow: /api/

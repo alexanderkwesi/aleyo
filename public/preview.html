@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>Live Website Preview | Design Studio</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0c15;
+            overflow: hidden;
+        }
+        .preview-toolbar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: rgba(10, 15, 26, 0.95);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            z-index: 1000;
+            padding: 0 24px;
+            height: 64px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        }
+        .preview-logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .preview-logo span {
+            font-weight: 600;
+            font-size: 1.2rem;
+            background: linear-gradient(135deg, #4F6EF7, #2DBCB6, #3ED67C);
+            background-clip: text;
+            -webkit-background-clip: text;
+            color: transparent;
+        }
+        .device-controls {
+            display: flex;
+            gap: 12px;
+            background: rgba(255,255,255,0.05);
+            padding: 6px 12px;
+            border-radius: 40px;
+            backdrop-filter: blur(4px);
+        }
+        .device-btn {
+            background: transparent;
+            border: none;
+            color: #aaa;
+            cursor: pointer;
+            padding: 8px 12px;
+            border-radius: 32px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .device-btn.active {
+            background: linear-gradient(135deg, #4F6EF7, #2DBCB6);
+            color: white;
+            box-shadow: 0 2px 8px rgba(79,110,247,0.3);
+        }
+        .device-btn:hover:not(.active) {
+            background: rgba(255,255,255,0.1);
+            color: white;
+        }
+        .action-buttons {
+            display: flex;
+            gap: 12px;
+        }
+        .action-btn {
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.15);
+            padding: 8px 18px;
+            border-radius: 30px;
+            color: white;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9rem;
+        }
+        .action-btn.primary {
+            background: linear-gradient(135deg, #4F6EF7, #2DBCB6);
+            border: none;
+        }
+        .action-btn:hover {
+            transform: translateY(-1px);
+            filter: brightness(1.05);
+            border-color: rgba(255,255,255,0.3);
+        }
+        .iframe-container {
+            position: fixed;
+            top: 64px;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: #0f121c;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s cubic-bezier(0.2, 0.9, 0.4, 1.1);
+            overflow: auto;
+            padding: 20px;
+        }
+        .preview-frame-wrapper {
+            background: #fff;
+            border-radius: 32px;
+            box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5);
+            transition: all 0.3s ease;
+            overflow: hidden;
+            margin: auto;
+        }
+        .preview-frame {
+            width: 100%;
+            height: 100%;
+            border: none;
+            background: white;
+            transition: all 0.2s;
+        }
+        .status-message {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #1e293b;
+            backdrop-filter: blur(8px);
+            padding: 10px 24px;
+            border-radius: 40px;
+            color: white;
+            font-size: 0.85rem;
+            z-index: 1100;
+            pointer-events: none;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            border-left: 3px solid #4F6EF7;
+        }
+        @keyframes fadeSlide {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .loading-overlay {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(8,12,20,0.9);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+            backdrop-filter: blur(4px);
+        }
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid rgba(79,110,247,0.2);
+            border-top: 3px solid #4F6EF7;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .error-banner {
+            background: rgba(220,38,38,0.9);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 16px;
+            max-width: 400px;
+            text-align: center;
+        }
+        @media (max-width: 700px) {
+            .device-controls span { display: none; }
+            .action-btn span { display: none; }
+            .preview-toolbar { padding: 0 16px; }
+        }
+    </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.development.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.development.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mui/material@5.14.0/umd/material-ui.development.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@emotion/react@11.11.1/dist/emotion-react.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@emotion/styled@11.11.0/dist/emotion-styled.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/framer-motion@10.16.4/dist/framer-motion.js"></script>
+
+<script>
+// ----------------------
+// PREVIEW PAGE COMPONENT
+// Loads projects saved by DesignStudio.js from localStorage
+// ----------------------
+
+const { useState, useEffect, useCallback } = React;
+const { 
+    Box, Container, Paper, Typography, Button, IconButton, 
+    Snackbar, Alert, CircularProgress, alpha,
+    Grid, Divider, Chip, Tooltip
+} = MaterialUI;
+
+const { motion, AnimatePresence } = framerMotion;
+
+// Gradient constants (matching DesignStudio)
+const G_START = '#4F6EF7';
+const G_MID = '#2DBCB6';
+const G_END = '#3ED67C';
+const GRAD = `linear-gradient(135deg, ${G_START} 0%, ${G_MID} 50%, ${G_END} 100%)`;
+
+// Helper to get project from localStorage (same pattern as DesignStudio)
+const getStoredProject = () => {
+    try {
+        // Get project ID from URL parameters
+        const urlParams = new URLSearchParams(window.location.search);
+        const projectId = urlParams.get('id');
+        const isPublished = urlParams.get('published') === 'true';
+        
+        console.log('Loading project:', { projectId, isPublished });
+        
+        if (projectId) {
+            // Try to load from published version first if viewing published site
+            if (isPublished) {
+                const published = localStorage.getItem(`published_${projectId}`);
+                if (published) {
+                    console.log('Loaded published project:', projectId);
+                    return JSON.parse(published);
+                }
+            }
+            
+            // Load from regular project storage
+            const stored = localStorage.getItem(`project_${projectId}`);
+            if (stored) {
+                console.log('Loaded project from storage:', projectId);
+                return JSON.parse(stored);
+            }
+        }
+        
+        // Fallback: load latest project
+        const latestId = localStorage.getItem('latest_project_id');
+        if (latestId) {
+            const latest = localStorage.getItem(`project_${latestId}`);
+            if (latest) {
+                console.log('Loaded latest project:', latestId);
+                return JSON.parse(latest);
+            }
+        }
+        
+        // Fallback: find any project_* key
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key && key.startsWith('project_')) {
+                const data = localStorage.getItem(key);
+                if (data) {
+                    console.log('Found project with key:', key);
+                    return JSON.parse(data);
+                }
+            }
+        }
+        
+        return null;
+    } catch(e) {
+        console.error('Error loading project from localStorage:', e);
+        return null;
+    }
+};
+
+// Default template if nothing found (demo)
+const getFallbackDesign = () => ({
+    id: 'demo-1',
+    name: 'Demo Website',
+    components: [
+        {
+            id: 'hero-demo',
+            type: 'hero',
+            content: {
+                title: 'Welcome to Design Studio',
+                subtitle: 'Create beautiful websites with our drag-and-drop editor',
+                buttonText: 'Get Started',
+                image: null
+            },
+            styles: { textAlign: 'center', padding: '80px 0' }
+        },
+        {
+            id: 'features-demo',
+            type: 'features',
+            content: {
+                title: 'Powerful Features',
+                items: [
+                    { title: 'Drag & Drop', description: 'Build visually without coding', icon: '✨' },
+                    { title: 'Real-time Preview', description: 'See changes instantly', icon: '⚡' },
+                    { title: 'Responsive Design', description: 'Looks perfect on any device', icon: '📱' }
+                ]
+            },
+            styles: { padding: '60px 0' }
+        },
+        {
+            id: 'pricing-demo',
+            type: 'pricing',
+            content: {
+                title: 'Flexible Plans',
+                plans: [
+                    { name: 'Starter', price: '$19', features: ['Basic Components', 'Email Support'] },
+                    { name: 'Pro', price: '$49', features: ['All Components', 'Priority Support', 'Analytics'] },
+                    { name: 'Enterprise', price: '$199', features: ['Everything', 'Dedicated Support', 'Custom Development'] }
+                ]
+            },
+            styles: { padding: '60px 0' }
+        }
+    ],
+    styles: {
+        primaryColor: '#4F6EF7',
+        secondaryColor: '#2DBCB6',
+        accentColor: '#3ED67C',
+        fontFamily: 'Inter, sans-serif',
+        backgroundColor: '#ffffff',
+        textColor: '#1e293b',
+        headingColor: '#0f172a',
+        borderRadius: '12px',
+        spacing: '24px',
+        buttonStyle: 'rounded',
+        animationEnabled: true
+    }
+});
+
+// Component renderer (mirrors DesignStudio renderComponent logic)
+const RenderComponent = ({ component, globalStyles }) => {
+    const styles = { ...component.styles };
+    const primary = globalStyles.primaryColor;
+    const secondary = globalStyles.secondaryColor;
+    const textColor = globalStyles.textColor;
+    const headingColor = globalStyles.headingColor;
+    const borderRadius = globalStyles.borderRadius;
+    const buttonRadius = globalStyles.buttonStyle === 'rounded' ? '999px' : borderRadius;
+    const bgColor = globalStyles.backgroundColor;
+    
+    switch(component.type) {
+        case 'hero':
+            return (
+                <Box sx={{ textAlign: 'center', py: 8, px: 4, ...styles }}>
+                    {component.content.image && (
+                        <Box component="img" src={component.content.image} alt="hero" sx={{ maxWidth: '100%', height: 'auto', mb: 4, borderRadius }} />
+                    )}
+                    <Typography variant="h1" sx={{ fontSize: { xs: '2rem', md: '3rem' }, mb: 2, fontWeight: 'bold', color: headingColor }}>
+                        {component.content.title}
+                    </Typography>
+                    <Typography variant="h5" sx={{ mb: 4, color: alpha(textColor, 0.8), maxWidth: '800px', mx: 'auto' }}>
+                        {component.content.subtitle}
+                    </Typography>
+                    <Button variant="contained" size="large" sx={{ bgcolor: primary, '&:hover': { bgcolor: secondary }, borderRadius: buttonRadius, px: 4, py: 1.5 }}>
+                        {component.content.buttonText}
+                    </Button>
+                </Box>
+            );
+        case 'features':
+            return (
+                <Box sx={{ py: 6, px: 4, ...styles }}>
+                    <Typography variant="h2" sx={{ textAlign: 'center', mb: 6, color: headingColor, fontWeight: 'bold' }}>
+                        {component.content.title}
+                    </Typography>
+                    <Grid container spacing={4}>
+                        {component.content.items.map((item, idx) => (
+                            <Grid item xs={12} md={4} key={idx}>
+                                <Paper sx={{ p: 4, textAlign: 'center', bgcolor: alpha(primary, 0.05), borderRadius, transition: 'transform 0.3s', '&:hover': { transform: 'translateY(-8px)' } }}>
+                                    <Typography variant="h5" sx={{ mb: 2, color: primary }}>{item.title}</Typography>
+                                    <Typography sx={{ color: alpha(textColor, 0.7) }}>{item.description}</Typography>
+                                </Paper>
+                            </Grid>
+                        ))}
+                    </Grid>
+                </Box>
+            );
+        case 'gallery':
+            return (
+                <Box sx={{ py: 6, px: 4, ...styles }}>
+                    <Typography variant="h2" sx={{ textAlign: 'center', mb: 6, color: headingColor, fontWeight: 'bold' }}>{component.content.title}</Typography>
+                    <Grid container spacing={3}>
+                        {component.content.items.map((item, idx) => (
+                            <Grid item xs={12} md={4} key={idx}>
+                                <Paper sx={{ p: 2, textAlign: 'center', bgcolor: alpha(primary, 0.05), borderRadius }}>
+                                    <Box sx={{ width: '100%', height: 200, bgcolor: alpha(primary, 0.2), borderRadius, mb: 2, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                        <span style={{ fontSize: 48 }}>🖼️</span>
+                                    </Box>
+                                    <Typography variant="h6">{item.title}</Typography>
+                                    <Typography variant="body2" sx={{ color: alpha(textColor, 0.7) }}>{item.description}</Typography>
+                                </Paper>
+                            </Grid>
+                        ))}
+                    </Grid>
+                </Box>
+            );
+        case 'contact':
+            return (
+                <Box sx={{ py: 6, px: 4, ...styles }}>
+                    <Typography variant="h2" sx={{ textAlign: 'center', mb: 6, color: headingColor, fontWeight: 'bold' }}>{component.content.title}</Typography>
+                    <Grid container spacing={4}>
+                        <Grid item xs={12} md={6}>
+                            <Paper sx={{ p: 4, bgcolor: alpha(primary, 0.05), borderRadius }}>
+                                <input type="text" placeholder="Name" style={{ width: '100%', marginBottom: 16, padding: 12, borderRadius: 8, border: `1px solid ${alpha(textColor, 0.2)}`, background: 'transparent', color: textColor }} />
+                                <input type="email" placeholder="Email" style={{ width: '100%', marginBottom: 16, padding: 12, borderRadius: 8, border: `1px solid ${alpha(textColor, 0.2)}`, background: 'transparent', color: textColor }} />
+                                <textarea placeholder="Message" rows="4" style={{ width: '100%', marginBottom: 16, padding: 12, borderRadius: 8, border: `1px solid ${alpha(textColor, 0.2)}`, background: 'transparent', color: textColor }}></textarea>
+                                <Button fullWidth variant="contained" sx={{ bgcolor: primary }}>Send Message</Button>
+                            </Paper>
+                        </Grid>
+                        <Grid item xs={12} md={6}>
+                            <Paper sx={{ p: 4, bgcolor: alpha(primary, 0.05), borderRadius }}>
+                                <Typography variant="h6" sx={{ mb: 2, color: headingColor }}>Contact Info</Typography>
+                                <Typography sx={{ mb: 1, color: alpha(textColor, 0.8) }}>📍 {component.content.address || '123 Studio St, City'}</Typography>
+                                <Typography sx={{ mb: 1, color: alpha(textColor, 0.8) }}>📧 {component.content.email || 'hello@example.com'}</Typography>
+                                <Typography sx={{ color: alpha(textColor, 0.8) }}>📞 {component.content.phone || '+1 234 567 890'}</Typography>
+                            </Paper>
+                        </Grid>
+                    </Grid>
+                </Box>
+            );
+        case 'pricing':
+            return (
+                <Box sx={{ py: 6, px: 4, ...styles }}>
+                    <Typography variant="h2" sx={{ textAlign: 'center', mb: 6, color: headingColor, fontWeight: 'bold' }}>{component.content.title}</Typography>
+                    <Grid container spacing={4} justifyContent="center">
+                        {component.content.plans.map((plan, idx) => (
+                            <Grid item xs={12} md={4} key={idx}>
+                                <Paper sx={{ p: 4, textAlign: 'center', bgcolor: alpha(primary, 0.05), borderRadius, transition: 'transform 0.3s', '&:hover': { transform: 'translateY(-8px)' } }}>
+                                    <Typography variant="h4" sx={{ mb: 2, color: primary }}>{plan.name}</Typography>
+                                    <Typography variant="h2" sx={{ mb: 2, fontWeight: 'bold' }}>{plan.price}</Typography>
+                                    <Divider sx={{ my: 2 }} />
+                                    {plan.features.map((feat, fIdx) => (
+                                        <Typography key={fIdx} sx={{ mb: 1, color: alpha(textColor, 0.7) }}>✓ {feat}</Typography>
+                                    ))}
+                                    <Button variant="contained" fullWidth sx={{ mt: 3, bgcolor: primary }}>Choose Plan</Button>
+                                </Paper>
+                            </Grid>
+                        ))}
+                    </Grid>
+                </Box>
+            );
+        default:
+            return <Typography sx={{ p: 4, textAlign: 'center', color: textColor }}>{component.content?.text || 'New Section'}</Typography>;
+    }
+};
+
+// Main Preview Component
+const PreviewPage = () => {
+    const [projectData, setProjectData] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const [previewMode, setPreviewMode] = useState('desktop');
+    const [refreshKey, setRefreshKey] = useState(0);
+    const [snack, setSnack] = useState({ open: false, message: '', severity: 'success' });
+    
+    // dimensions for responsive frames
+    const getFrameWidth = () => {
+        switch(previewMode) {
+            case 'mobile': return '375px';
+            case 'tablet': return '768px';
+            default: return '100%';
+        }
+    };
+    const getFrameMaxWidth = () => {
+        if(previewMode === 'desktop') return '1400px';
+        return getFrameWidth();
+    };
+    
+    useEffect(() => {
+        // Load project from localStorage
+        try {
+            const stored = getStoredProject();
+            if (stored && (stored.components || stored.styles)) {
+                setProjectData(stored);
+                document.title = `${stored.name || 'Website'} | Live Preview`;
+            } else {
+                console.log('No stored project found, using fallback');
+                setProjectData(getFallbackDesign());
+                document.title = 'Demo Website | Live Preview';
+            }
+            setLoading(false);
+        } catch (err) {
+            console.error('Failed to load design preview:', err);
+            setError('Failed to load design preview. Please try again.');
+            setLoading(false);
+        }
+        
+        // Listen for storage changes (if user saves while preview is open)
+        const handleStorageChange = (e) => {
+            if (e.key && e.key.startsWith('project_')) {
+                console.log('Project updated in storage, refreshing preview...');
+                const updated = getStoredProject();
+                if (updated) {
+                    setProjectData(updated);
+                    setRefreshKey(prev => prev + 1);
+                    setSnack({ open: true, message: 'Project updated! Refreshing preview...', severity: 'info' });
+                }
+            }
+        };
+        
+        window.addEventListener('storage', handleStorageChange);
+        return () => window.removeEventListener('storage', handleStorageChange);
+    }, []);
+    
+    const handleRefresh = () => {
+        const updated = getStoredProject();
+        if (updated) {
+            setProjectData(updated);
+            setRefreshKey(prev => prev + 1);
+            setSnack({ open: true, message: 'Preview refreshed', severity: 'success' });
+        } else {
+            setSnack({ open: true, message: 'No updated project found', severity: 'warning' });
+        }
+    };
+    
+    const handleOpenLive = () => {
+        window.open(window.location.href, '_blank');
+    };
+    
+    const globalStyles = projectData?.styles || {
+        primaryColor: G_START,
+        secondaryColor: G_MID,
+        accentColor: G_END,
+        fontFamily: 'Inter, sans-serif',
+        backgroundColor: '#ffffff',
+        textColor: '#1e293b',
+        headingColor: '#0f172a',
+        borderRadius: '12px',
+        spacing: '24px',
+        buttonStyle: 'rounded',
+        animationEnabled: true,
+    };
+    
+    const components = projectData?.components || [];
+    
+    if (loading) {
+        return (
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', bgcolor: '#080C14' }}>
+                <CircularProgress sx={{ color: G_START }} />
+                <Typography sx={{ ml: 2, color: 'white' }}>Loading your website preview...</Typography>
+            </Box>
+        );
+    }
+    
+    if (error) {
+        return (
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', bgcolor: '#080C14' }}>
+                <Paper sx={{ p: 4, textAlign: 'center', maxWidth: 400, bgcolor: '#1e1f2e', color: 'white' }}>
+                    <Typography color="error" variant="h6">⚠️ {error}</Typography>
+                    <Button sx={{ mt: 2 }} variant="contained" onClick={() => window.location.reload()}>Retry</Button>
+                </Paper>
+            </Box>
+        );
+    }
+    
+    const previewContent = (
+        <Box
+            className="preview-container"
+            sx={{
+                backgroundColor: globalStyles.backgroundColor,
+                color: globalStyles.textColor,
+                fontFamily: globalStyles.fontFamily,
+                minHeight: '100vh',
+                width: '100%',
+                transition: 'all 0.2s',
+            }}
+        >
+            <style>{`
+                .preview-container h1, .preview-container h2, .preview-container h3 {
+                    color: ${globalStyles.headingColor};
+                }
+                .preview-container button {
+                    transition: all 0.2s;
+                    border-radius: ${globalStyles.buttonStyle === 'rounded' ? '999px' : globalStyles.borderRadius};
+                }
+                ${globalStyles.animationEnabled ? `
+                    @keyframes fadeSlideUp {
+                        from { opacity: 0; transform: translateY(20px); }
+                        to { opacity: 1; transform: translateY(0); }
+                    }
+                    .preview-container > div {
+                        animation: fadeSlideUp 0.5s ease-out;
+                    }
+                ` : ''}
+            `}</style>
+            {components.map((component, idx) => (
+                <motion.div
+                    key={`${component.id}-${refreshKey}`}
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: idx * 0.05 }}
+                    style={{ ...component.styles }}
+                >
+                    <RenderComponent component={component} globalStyles={globalStyles} />
+                </motion.div>
+            ))}
+        </Box>
+    );
+    
+    return (
+        <Box sx={{ height: '100vh', display: 'flex', flexDirection: 'column', bgcolor: '#0a0c15' }}>
+            {/* Toolbar */}
+            <Box sx={{
+                position: 'fixed', top: 0, left: 0, right: 0, zIndex: 1200,
+                background: 'rgba(10, 15, 26, 0.95)', backdropFilter: 'blur(12px)',
+                borderBottom: '1px solid rgba(255,255,255,0.08)',
+                px: { xs: 2, md: 4 }, py: 1.5, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1
+            }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                    <Typography variant="h6" sx={{ background: GRAD, backgroundClip: 'text', WebkitBackgroundClip: 'text', color: 'transparent', fontWeight: 700 }}>
+                        Live Preview
+                    </Typography>
+                    <Chip 
+                        label={projectData?.name || 'Website'} 
+                        size="small" 
+                        sx={{ bgcolor: alpha('#fff', 0.1), color: '#ccc' }} 
+                    />
+                    {projectData?.status === 'published' && (
+                        <Chip 
+                            label="Published" 
+                            size="small" 
+                            sx={{ bgcolor: alpha(G_END, 0.2), color: G_END }} 
+                        />
+                    )}
+                </Box>
+                
+                <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <Tooltip title="Mobile View">
+                        <Button 
+                            size="small" 
+                            onClick={() => setPreviewMode('mobile')} 
+                            variant={previewMode === 'mobile' ? 'contained' : 'outlined'} 
+                            sx={{ minWidth: 70, borderColor: alpha('#fff', 0.2), color: previewMode === 'mobile' ? '#fff' : '#aaa' }}
+                        >
+                            📱 Mobile
+                        </Button>
+                    </Tooltip>
+                    <Tooltip title="Tablet View">
+                        <Button 
+                            size="small" 
+                            onClick={() => setPreviewMode('tablet')} 
+                            variant={previewMode === 'tablet' ? 'contained' : 'outlined'} 
+                            sx={{ borderColor: alpha('#fff', 0.2), color: previewMode === 'tablet' ? '#fff' : '#aaa' }}
+                        >
+                            📟 Tablet
+                        </Button>
+                    </Tooltip>
+                    <Tooltip title="Desktop View">
+                        <Button 
+                            size="small" 
+                            onClick={() => setPreviewMode('desktop')} 
+                            variant={previewMode === 'desktop' ? 'contained' : 'outlined'} 
+                            sx={{ borderColor: alpha('#fff', 0.2), color: previewMode === 'desktop' ? '#fff' : '#aaa' }}
+                        >
+                            🖥️ Desktop
+                        </Button>
+                    </Tooltip>
+                    <Tooltip title="Refresh preview">
+                        <IconButton onClick={handleRefresh} sx={{ color: '#ddd', ml: 1 }}>
+                            <span style={{ fontSize: 20 }}>🔄</span>
+                        </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Open in new tab">
+                        <IconButton onClick={handleOpenLive} sx={{ color: '#ddd' }}>
+                            <span>🔗</span>
+                        </IconButton>
+                    </Tooltip>
+                </Box>
+            </Box>
+            
+            {/* Preview Area */}
+            <Box sx={{
+                position: 'fixed', top: '72px', left: 0, right: 0, bottom: 0,
+                overflow: 'auto', background: '#11131f', p: 3, display: 'flex', justifyContent: 'center', alignItems: 'flex-start'
+            }}>
+                <motion.div
+                    key={previewMode + refreshKey}
+                    initial={{ scale: 0.98, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    transition={{ duration: 0.25 }}
+                    style={{
+                        width: getFrameWidth(),
+                        maxWidth: getFrameMaxWidth(),
+                        background: globalStyles.backgroundColor,
+                        borderRadius: previewMode !== 'desktop' ? '28px' : '0px',
+                        boxShadow: previewMode !== 'desktop' ? '0 25px 50px -12px rgba(0,0,0,0.5)' : 'none',
+                        overflow: 'hidden',
+                        transition: 'all 0.25s ease',
+                        margin: '0 auto 40px auto',
+                        border: previewMode !== 'desktop' ? '1px solid rgba(255,255,255,0.1)' : 'none'
+                    }}
+                >
+                    {previewContent}
+                </motion.div>
+            </Box>
+            
+            <Snackbar 
+                open={snack.open} 
+                autoHideDuration={3000} 
+                onClose={() => setSnack({...snack, open: false})} 
+                anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+            >
+                <Alert severity={snack.severity} sx={{ bgcolor: '#1e293b', color: 'white' }}>
+                    {snack.message}
+                </Alert>
+            </Snackbar>
+        </Box>
+    );
+};
+
+// Render to root
+const rootElement = document.getElementById('root');
+const root = ReactDOM.createRoot(rootElement);
+root.render(React.createElement(PreviewPage));
+</script>
+</body>
+</html>
