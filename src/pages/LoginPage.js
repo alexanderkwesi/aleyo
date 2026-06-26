@@ -53,7 +53,17 @@ const LoginPage = () => {
       <Container maxWidth="sm">
         <Paper sx={{ p: 4, borderRadius: 4, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
           <Box sx={{ textAlign: "center", mb: 4 }}>
-            <img src={logoImage} alt="Aleyo Logo" style={{ width: 48, height: 48, marginBottom: 16, cursor: "pointer" }} onClick={() => navigate("/")} />
+              <img
+              src={logoImage}
+              alt="Aleyo Logo"
+              style={{
+                width: 48,
+                height: 48,
+                marginBottom: 16,
+                cursor: 'pointer',
+              }}
+              onClick={() => navigate('/')}
+            />
             <Typography variant="h5" sx={{ color: 'white' }}>Welcome Back</Typography>
           </Box>
           {error && <Alert severity="error" sx={{ mb: 3, background: 'rgba(220,38,38,0.1)', color: '#f87171', border: '1px solid #dc2626' }}>{error}</Alert>}
