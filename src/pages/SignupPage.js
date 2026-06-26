@@ -15,7 +15,7 @@ import {
 } from '@mui/material';
 import { Visibility, VisibilityOff, Email, Lock, Person } from '@mui/icons-material';
 import { useNavigate, Link as RouterLink } from 'react-router-dom';
-import logoImage from '../logo-1.png';
+import logoImage from '../public/logo-1.png';
 
 const SignupPage = () => {
   const navigate = useNavigate();
