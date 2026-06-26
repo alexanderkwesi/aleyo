@@ -2,7 +2,7 @@
   "name": "aleyo-web-builder",
   "version": "1.0.0",
   "private": true,
-  "main": "/Public/index.html",
+  "main": "/src/App.js",
   "dependencies": {
     "@emotion/react": "11.11.1",
     "@emotion/styled": "11.11.0",
