@@ -7,12 +7,20 @@
       "config": {
         "maxLambdaSize": "15mb"
       }
+    },
+    {
+      "src": "App.js",
+      "use": "@vercel/node"
     }
   ],
   "routes": [
     {
       "src": "/api/(.*)",
       "dest": "backend/app.py"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "App.js"
     }
   ]
 }
