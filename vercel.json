@@ -9,8 +9,8 @@
       }
     },
     {
-      "src": "App.js",
-      "use": "@vercel/node"
+      "src": "public/index.html",
+      "use": "@vercel/static"
     }
   ],
   "routes": [
@@ -20,7 +20,7 @@
     },
     {
       "src": "/(.*)",
-      "dest": "App.js"
+      "dest": "public/index.html"
     }
   ]
 }
