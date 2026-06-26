@@ -43,7 +43,7 @@
     "webpack-dev-server": "4.15.1"
   },
   "scripts": {
-    "start": "set PORT=4000 && react-scripts start",
+    "start": "set PORT=4000 && react-scripts start ./src/App.js",
     "install-script": "powershell -ExecutionPolicy Bypass -File .\\install.ps1",
     "dev": "concurrently \"npm run start\" \"python ./backend/app.py\"",
     "startall": "webpack serve --mode development",
