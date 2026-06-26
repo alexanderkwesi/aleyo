@@ -3,7 +3,7 @@ import React, { useState } from "react";
 import { Box, Container, Paper, TextField, Button, Typography, Link, Alert, IconButton, InputAdornment } from "@mui/material";
 import { Visibility, VisibilityOff, Email, Lock } from "@mui/icons-material";
 import { useNavigate, Link as RouterLink } from "react-router-dom";
-import logoImage from './public/logo-1.png';
+import logoImage from 'public/logo-1.png';
 
 const G_START = '#4F6EF7';
 const G_MID = '#2DBCB6';
