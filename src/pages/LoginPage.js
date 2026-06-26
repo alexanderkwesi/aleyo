@@ -9,6 +9,8 @@ const G_MID = '#2DBCB6';
 const G_END = '#3ED67C';
 const GRAD = `linear-gradient(135deg, ${G_START} 0%, ${G_MID} 50%, ${G_END} 100%)`;
 
+const API_BASE = process.env.REACT_APP_API_URL || "http://127.0.0.1:8000";
+
 const LoginPage = () => {
   const navigate = useNavigate();
   const [showPassword, setShowPassword] = useState(false);
@@ -19,14 +21,30 @@ const LoginPage = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
-    setTimeout(() => {
-      if (formData.email === "demo@aleyo.com" && formData.password === "password") {
-        localStorage.setItem("authToken", "demo-token");
-        localStorage.setItem("user", JSON.stringify({ email: formData.email, name: "Demo User" }));
-        navigate("/dashboard");
-      } else setError("Invalid email or password");
+    setError("");
+
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: formData.email, password: formData.password }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setError(data.detail || "Invalid email or password");
+        return;
+      }
+
+      localStorage.setItem("authToken", data.access_token);
+      localStorage.setItem("user", JSON.stringify(data.user));
+      navigate("/dashboard");
+    } catch (err) {
+      setError("Network error. Please try again.");
+    } finally {
       setLoading(false);
-    }, 1000);
+    }
   };
 
   return (
@@ -35,7 +53,6 @@ const LoginPage = () => {
         <Paper sx={{ p: 4, borderRadius: 4, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
           <Box sx={{ textAlign: "center", mb: 4 }}>
             <img src="public/logo-1.png" alt="Aleyo Logo" style={{ width: 48, height: 48, marginBottom: 16, cursor: "pointer" }} onClick={() => navigate("/")} />
-            
             <Typography variant="h5" sx={{ color: 'white' }}>Welcome Back</Typography>
           </Box>
           {error && <Alert severity="error" sx={{ mb: 3, background: 'rgba(220,38,38,0.1)', color: '#f87171', border: '1px solid #dc2626' }}>{error}</Alert>}
