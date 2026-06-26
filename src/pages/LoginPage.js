@@ -34,7 +34,7 @@ const LoginPage = () => {
       <Container maxWidth="sm">
         <Paper sx={{ p: 4, borderRadius: 4, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
           <Box sx={{ textAlign: "center", mb: 4 }}>
-            <img src="../logo-1.png" alt="Aleyo Logo" style={{ width: 48, height: 48, marginBottom: 16, cursor: "pointer" }} onClick={() => navigate("/")} />
+            <img src="src/logo-1.png" alt="Aleyo Logo" style={{ width: 48, height: 48, marginBottom: 16, cursor: "pointer" }} onClick={() => navigate("/")} />
             
             <Typography variant="h5" sx={{ color: 'white' }}>Welcome Back</Typography>
           </Box>
