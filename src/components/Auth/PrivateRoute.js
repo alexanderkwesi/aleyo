@@ -182,14 +182,22 @@ const PrivateRoute = ({
   const { user, token, loading, isAuthenticated } = useAuth();
   const location = useLocation();
 
-  // Show loading screen while checking authentication
+  // Debug logs
+  console.log('=== PRIVATE ROUTE DEBUG ===');
+  console.log('user:', user);
+  console.log('token:', token);
+  console.log('loading:', loading);
+  console.log('isAuthenticated:', isAuthenticated);
+  console.log('location:', location.pathname);
+  console.log('localStorage authToken:', localStorage.getItem('authToken'));
+  console.log('localStorage user:', localStorage.getItem('user'));
+
   if (loading) {
     return <LoadingScreen />;
   }
 
-  // Not authenticated - redirect to login
   if (!isAuthenticated || !token) {
-    // Save the attempted location for redirect after login
+    console.log('Not authenticated, redirecting to:', redirectTo);
     localStorage.setItem('redirectAfterLogin', location.pathname + location.search);
     return <Navigate to={redirectTo} state={{ from: location }} replace />;
   }
