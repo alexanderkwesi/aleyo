@@ -2833,17 +2833,60 @@ const DesignStudio = ({
   const handleSaveConfirm = async () => {
     setSaving(true);
     try {
-      const projectId = currentProject?.id || Date.now().toString();
       const projectName = projectNameInput.trim() || 'Untitled Project';
-      const publishSlug = `site-${projectId}-${Math.random().toString(36).slice(2, 8)}`;
 
       // Flush current canvas into the active page before saving
       const updatedPages = pages.map((p) =>
         p.id === activePageId ? { ...p, components, textElements, imageElements } : p
       );
 
+      const token = localStorage.getItem('authToken');
+
+      // ── Decide create vs update ──────────────────────────────────────
+      let savedId = currentProject?.id || savedProjectCard?.id;
+      let apiProject;
+
+      if (savedId) {
+        // Update existing project
+        const res = await fetch(`/api/projects/${savedId}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token && { Authorization: `Bearer ${token}` }),
+          },
+          body: JSON.stringify({
+            name: projectName,
+            customizations: { styles: globalStyles, pages: updatedPages },
+            html_code: generatedCode || null,
+          }),
+        });
+        if (!res.ok) throw new Error((await res.json()).detail || 'Update failed');
+        apiProject = await res.json();
+      } else {
+        // Create new project
+        const res = await fetch('/api/projects', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token && { Authorization: `Bearer ${token}` }),
+          },
+          body: JSON.stringify({
+            name: projectName,
+            designs: [],
+            customizations: { styles: globalStyles, pages: updatedPages },
+          }),
+        });
+        if (!res.ok) throw new Error((await res.json()).detail || 'Create failed');
+        apiProject = await res.json();
+        savedId = apiProject.id;
+      }
+
+      // ── Also persist locally for auto-save / gallery ─────────────────
+      const publishSlug = savedProjectCard?.publishSlug ||
+        `site-${savedId}-${Math.random().toString(36).slice(2, 8)}`;
+
       const projectData = {
-        id: projectId,
+        id: savedId,
         name: projectName,
         components,
         textElements,
@@ -2857,28 +2900,27 @@ const DesignStudio = ({
         publishSlug,
       };
 
-      localStorage.setItem(`project_${projectId}`, JSON.stringify(projectData));
-      localStorage.setItem('latest_project_id', projectId);
+      localStorage.setItem(`project_${savedId}`, JSON.stringify(projectData));
+      localStorage.setItem('latest_project_id', savedId);
       localStorage.setItem('latest_project_data', JSON.stringify(projectData));
 
-      // Keep a lightweight index for the gallery
       const indexRaw = localStorage.getItem('projects_index');
       const index = indexRaw ? JSON.parse(indexRaw) : [];
-      if (!index.includes(projectId)) {
-        index.push(projectId);
+      if (!index.includes(savedId)) {
+        index.push(savedId);
         localStorage.setItem('projects_index', JSON.stringify(index));
       }
 
-      if (setCurrentProject) setCurrentProject(projectData);
+      if (setCurrentProject) setCurrentProject({ ...projectData, ...apiProject });
       setPages(updatedPages);
 
       const thumbnail = generateThumbnailDataUrl(globalStyles);
-      setSavedProjectCard({ name: projectName, id: projectId, publishSlug, thumbnail });
-      setSaveModalOpen(false);
+      // Keep modal OPEN so the saved project card is visible
+      setSavedProjectCard({ name: projectName, id: savedId, publishSlug, thumbnail });
       showSnackbar('Project saved successfully!', 'success');
     } catch (error) {
       console.error('Error saving project:', error);
-      showSnackbar('Error saving project', 'error');
+      showSnackbar(error.message || 'Error saving project', 'error');
     } finally {
       setSaving(false);
     }
@@ -2972,45 +3014,71 @@ const DesignStudio = ({
         publishedUrl: `${window.location.origin}/p/${finalSlug}`,
       };
 
-      // Save to backend API
-      const response = await axios.post('/api/websites/publish', websiteData, {
-        headers: {
-          'Content-Type': 'application/json',
-          // Include auth token if using JWT
-          // 'Authorization': `Bearer ${localStorage.getItem('token')}`
-        },
+      // ── Save to backend API ──────────────────────────────────────────
+      const token = localStorage.getItem('authToken');
+      const authHeader = token ? { Authorization: `Bearer ${token}` } : {};
+
+      // Upsert the project so html_code / customizations are current
+      const isExisting = !!(savedProjectCard?.id || currentProject?.id);
+      const upsertUrl = isExisting
+        ? `/api/projects/${projectId}`
+        : '/api/projects';
+      const upsertRes = await fetch(upsertUrl, {
+        method: isExisting ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeader },
+        body: JSON.stringify({
+          name: websiteName.trim(),
+          designs: [],
+          customizations: { styles: globalStyles, pages },
+          html_code: null,
+        }),
+      });
+      if (!upsertRes.ok) {
+        const err = await upsertRes.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to save project');
+      }
+      const upsertData = await upsertRes.json();
+      const finalProjectId = upsertData.id || projectId;
+
+      // Now call the publish endpoint
+      const publishRes = await fetch(`/api/projects/${finalProjectId}/publish`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeader },
+      });
+      if (!publishRes.ok) {
+        const err = await publishRes.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to publish');
+      }
+      const publishData = await publishRes.json();
+      const publishedUrl = publishData.published_url || websiteData.publishedUrl;
+
+      // Store locally for backup/offline access
+      const finalWebsiteData = { ...websiteData, publishedUrl, id: finalProjectId };
+      localStorage.setItem(`published_${finalProjectId}`, JSON.stringify(finalWebsiteData));
+      localStorage.setItem(`project_${finalProjectId}`, JSON.stringify(finalWebsiteData));
+      localStorage.setItem(`published_slug_${finalSlug}`, JSON.stringify(finalWebsiteData));
+
+      // Update savedProjectCard with new info
+      setSavedProjectCard({
+        name: websiteName.trim(),
+        id: finalProjectId,
+        publishSlug: finalSlug,
+        thumbnail: generateThumbnailDataUrl(globalStyles),
       });
 
-      if (response.data.success) {
-        // Store locally for backup/offline access
-        localStorage.setItem(`published_${projectId}`, JSON.stringify(websiteData));
-        localStorage.setItem(`project_${projectId}`, JSON.stringify(websiteData));
-        localStorage.setItem(`published_slug_${finalSlug}`, JSON.stringify(websiteData));
+      // Set the publish URL for the success dialog
+      setPublishUrl(publishedUrl);
+      setPublishModalOpen(false);
+      setPublishDialogOpen(true);
 
-        // Update savedProjectCard with new info
-        setSavedProjectCard({
-          name: websiteName.trim(),
-          id: projectId,
-          publishSlug: finalSlug,
-          thumbnail: generateThumbnailDataUrl(globalStyles),
-        });
-
-        // Set the publish URL for the success dialog
-        setPublishUrl(websiteData.publishedUrl);
-        setPublishModalOpen(false);
-        setPublishDialogOpen(true);
-
-        if (setCurrentProject) {
-          setCurrentProject({ ...currentProject, ...websiteData, status: 'published' });
-        }
-
-        showSnackbar('Website published successfully!', 'success');
-      } else {
-        throw new Error(response.data.message || 'Failed to publish');
+      if (setCurrentProject) {
+        setCurrentProject({ ...currentProject, ...finalWebsiteData, status: 'published' });
       }
+
+      showSnackbar('Website published successfully!', 'success');
     } catch (error) {
       console.error('Error saving to database:', error);
-      showSnackbar(error.response?.data?.message || 'Error publishing website', 'error');
+      showSnackbar(error.message || 'Error publishing website', 'error');
     } finally {
       setIsSavingToDB(false);
     }
@@ -6667,7 +6735,7 @@ const DesignStudio = ({
             onClick={() => setSaveModalOpen(false)}
             sx={{ color: alpha('#FFFFFF', 0.6), '&:hover': { color: 'white' } }}
           >
-            Cancel
+            {savedProjectCard ? 'Close' : 'Cancel'}
           </Button>
           <Button
             onClick={handleSaveConfirm}
@@ -6683,7 +6751,7 @@ const DesignStudio = ({
               '&:disabled': { opacity: 0.5 },
             }}
           >
-            {saving ? 'Saving…' : 'Save Project'}
+            {saving ? 'Saving…' : savedProjectCard ? 'Save Again' : 'Save Project'}
           </Button>
         </DialogActions>
       </Dialog>
