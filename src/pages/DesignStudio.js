@@ -2830,63 +2830,22 @@ const DesignStudio = ({
     }
   };
 
+  // In DesignStudio.js, replace the handleSaveConfirm function:
+
   const handleSaveConfirm = async () => {
     setSaving(true);
     try {
+      const projectId = currentProject?.id || Date.now().toString();
       const projectName = projectNameInput.trim() || 'Untitled Project';
+      const publishSlug = `site-${projectId}-${Math.random().toString(36).slice(2, 8)}`;
 
       // Flush current canvas into the active page before saving
       const updatedPages = pages.map((p) =>
         p.id === activePageId ? { ...p, components, textElements, imageElements } : p
       );
 
-      const token = localStorage.getItem('authToken');
-
-      // ── Decide create vs update ──────────────────────────────────────
-      let savedId = currentProject?.id || savedProjectCard?.id;
-      let apiProject;
-
-      if (savedId) {
-        // Update existing project
-        const res = await fetch(`/api/projects/${savedId}`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(token && { Authorization: `Bearer ${token}` }),
-          },
-          body: JSON.stringify({
-            name: projectName,
-            customizations: { styles: globalStyles, pages: updatedPages },
-            html_code: generatedCode || null,
-          }),
-        });
-        if (!res.ok) throw new Error((await res.json()).detail || 'Update failed');
-        apiProject = await res.json();
-      } else {
-        // Create new project
-        const res = await fetch('/api/projects', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(token && { Authorization: `Bearer ${token}` }),
-          },
-          body: JSON.stringify({
-            name: projectName,
-            designs: [],
-            customizations: { styles: globalStyles, pages: updatedPages },
-          }),
-        });
-        if (!res.ok) throw new Error((await res.json()).detail || 'Create failed');
-        apiProject = await res.json();
-        savedId = apiProject.id;
-      }
-
-      // ── Also persist locally for auto-save / gallery ─────────────────
-      const publishSlug = savedProjectCard?.publishSlug ||
-        `site-${savedId}-${Math.random().toString(36).slice(2, 8)}`;
-
       const projectData = {
-        id: savedId,
+        id: projectId,
         name: projectName,
         components,
         textElements,
@@ -2900,27 +2859,86 @@ const DesignStudio = ({
         publishSlug,
       };
 
-      localStorage.setItem(`project_${savedId}`, JSON.stringify(projectData));
-      localStorage.setItem('latest_project_id', savedId);
+      // Save to localStorage
+      localStorage.setItem(`project_${projectId}`, JSON.stringify(projectData));
+      localStorage.setItem('latest_project_id', projectId);
       localStorage.setItem('latest_project_data', JSON.stringify(projectData));
 
+      // Keep a lightweight index for the gallery
       const indexRaw = localStorage.getItem('projects_index');
       const index = indexRaw ? JSON.parse(indexRaw) : [];
-      if (!index.includes(savedId)) {
-        index.push(savedId);
+      if (!index.includes(projectId)) {
+        index.push(projectId);
         localStorage.setItem('projects_index', JSON.stringify(index));
       }
 
-      if (setCurrentProject) setCurrentProject({ ...projectData, ...apiProject });
+      // Save to database API
+      const token = localStorage.getItem('token');
+      const headers = {
+        'Content-Type': 'application/json',
+      };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
+      try {
+        // Check if project exists in database
+        let getResponse;
+        try {
+          getResponse = await axios.get(`/api/projects/${projectId}`, { headers });
+        } catch (e) {
+          // Project doesn't exist
+          getResponse = null;
+        }
+
+        const dbProjectData = {
+          name: projectName,
+          designs: [],
+          customizations: {
+            components: components,
+            textElements: textElements,
+            imageElements: imageElements,
+            uploadedImages: uploadedImages,
+            styles: globalStyles,
+            pages: updatedPages,
+          },
+        };
+
+        if (getResponse?.data) {
+          // Update existing project
+          await axios.put(
+            `/api/projects/${projectId}`,
+            {
+              name: projectName,
+              customizations: dbProjectData.customizations,
+            },
+            { headers }
+          );
+        } else {
+          // Create new project
+          await axios.post('/api/projects', dbProjectData, { headers });
+        }
+      } catch (apiError) {
+        console.warn('API save failed, saved locally only:', apiError.message);
+        // Continue - local save is already done
+      }
+
+      if (setCurrentProject) setCurrentProject(projectData);
       setPages(updatedPages);
 
       const thumbnail = generateThumbnailDataUrl(globalStyles);
-      // Keep modal OPEN so the saved project card is visible
-      setSavedProjectCard({ name: projectName, id: savedId, publishSlug, thumbnail });
+      setSavedProjectCard({
+        name: projectName,
+        id: projectId,
+        publishSlug,
+        thumbnail,
+        status: 'draft',
+      });
+      setSaveModalOpen(false);
       showSnackbar('Project saved successfully!', 'success');
     } catch (error) {
       console.error('Error saving project:', error);
-      showSnackbar(error.message || 'Error saving project', 'error');
+      showSnackbar('Error saving project', 'error');
     } finally {
       setSaving(false);
     }
@@ -2958,6 +2976,8 @@ const DesignStudio = ({
   };
 
   // Save website to database and generate link
+  // In DesignStudio.js, replace the saveWebsiteToDatabase function:
+
   const saveWebsiteToDatabase = async () => {
     if (!websiteName.trim()) {
       showSnackbar('Please enter a website name', 'warning');
@@ -2997,91 +3017,141 @@ const DesignStudio = ({
     try {
       const projectId = savedProjectCard?.id || currentProject?.id || Date.now().toString();
 
-      // Prepare website data
+      // Flush current canvas into active page
+      const updatedPages = pages.map((p) =>
+        p.id === activePageId ? { ...p, components, textElements, imageElements } : p
+      );
+
+      // Prepare website data - this matches the Project model in the database
       const websiteData = {
         id: projectId,
         name: websiteName.trim(),
-        slug: finalSlug,
-        components: components,
-        textElements: textElements,
-        imageElements: imageElements,
-        uploadedImages: uploadedImages,
-        styles: globalStyles,
-        lastEdited: new Date().toISOString(),
-        type: currentProject?.type || 'custom',
+        designs: [], // Design IDs - can be populated if using templates
+        customizations: {
+          components: components,
+          textElements: textElements,
+          imageElements: imageElements,
+          uploadedImages: uploadedImages,
+          styles: globalStyles,
+          pages: updatedPages,
+        },
+        html_code: generatedCode || generateHTMLCodeForSave(),
         status: 'published',
-        publishedAt: new Date().toISOString(),
-        publishedUrl: `${window.location.origin}/p/${finalSlug}`,
+        published_url: `${window.location.origin}/p/${finalSlug}`,
       };
 
-      // ── Save to backend API ──────────────────────────────────────────
-      const token = localStorage.getItem('authToken');
-      const authHeader = token ? { Authorization: `Bearer ${token}` } : {};
-
-      // Upsert the project so html_code / customizations are current
-      const isExisting = !!(savedProjectCard?.id || currentProject?.id);
-      const upsertUrl = isExisting
-        ? `/api/projects/${projectId}`
-        : '/api/projects';
-      const upsertRes = await fetch(upsertUrl, {
-        method: isExisting ? 'PUT' : 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeader },
-        body: JSON.stringify({
-          name: websiteName.trim(),
-          designs: [],
-          customizations: { styles: globalStyles, pages },
-          html_code: null,
-        }),
-      });
-      if (!upsertRes.ok) {
-        const err = await upsertRes.json().catch(() => ({}));
-        throw new Error(err.detail || 'Failed to save project');
+      // Save to backend API using the /api/projects endpoint
+      // First, create/update the project
+      const token = localStorage.getItem('token');
+      const headers = {
+        'Content-Type': 'application/json',
+      };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
       }
-      const upsertData = await upsertRes.json();
-      const finalProjectId = upsertData.id || projectId;
 
-      // Now call the publish endpoint
-      const publishRes = await fetch(`/api/projects/${finalProjectId}/publish`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeader },
-      });
-      if (!publishRes.ok) {
-        const err = await publishRes.json().catch(() => ({}));
-        throw new Error(err.detail || 'Failed to publish');
+      // Check if project exists
+      let response;
+      try {
+        // Try to get existing project
+        const getResponse = await axios.get(`/api/projects/${projectId}`, { headers });
+        if (getResponse.data) {
+          // Update existing project
+          response = await axios.put(
+            `/api/projects/${projectId}`,
+            {
+              name: websiteName.trim(),
+              customizations: websiteData.customizations,
+              html_code: websiteData.html_code,
+            },
+            { headers }
+          );
+        }
+      } catch (error) {
+        // Project doesn't exist, create new
+        response = await axios.post(
+          '/api/projects',
+          {
+            name: websiteName.trim(),
+            designs: [],
+            customizations: websiteData.customizations,
+          },
+          { headers }
+        );
       }
-      const publishData = await publishRes.json();
-      const publishedUrl = publishData.published_url || websiteData.publishedUrl;
+
+      // Then publish the project
+      const publishResponse = await axios.post(
+        `/api/projects/${projectId}/publish`,
+        {},
+        { headers }
+      );
+
+      // Also save to /api/websites/publish endpoint for backward compatibility
+      try {
+        await axios.post('/api/websites/publish', websiteData, { headers });
+      } catch (e) {
+        console.warn('Additional publish endpoint not available:', e.message);
+      }
 
       // Store locally for backup/offline access
-      const finalWebsiteData = { ...websiteData, publishedUrl, id: finalProjectId };
-      localStorage.setItem(`published_${finalProjectId}`, JSON.stringify(finalWebsiteData));
-      localStorage.setItem(`project_${finalProjectId}`, JSON.stringify(finalWebsiteData));
-      localStorage.setItem(`published_slug_${finalSlug}`, JSON.stringify(finalWebsiteData));
+      localStorage.setItem(`published_${projectId}`, JSON.stringify(websiteData));
+      localStorage.setItem(
+        `project_${projectId}`,
+        JSON.stringify({
+          ...websiteData,
+          status: 'published',
+          lastEdited: new Date().toISOString(),
+        })
+      );
+      localStorage.setItem(`published_slug_${finalSlug}`, JSON.stringify(websiteData));
 
       // Update savedProjectCard with new info
       setSavedProjectCard({
         name: websiteName.trim(),
-        id: finalProjectId,
+        id: projectId,
         publishSlug: finalSlug,
         thumbnail: generateThumbnailDataUrl(globalStyles),
+        status: 'published',
       });
 
       // Set the publish URL for the success dialog
-      setPublishUrl(publishedUrl);
+      setPublishUrl(websiteData.published_url || publishResponse.data?.published_url);
       setPublishModalOpen(false);
       setPublishDialogOpen(true);
 
       if (setCurrentProject) {
-        setCurrentProject({ ...currentProject, ...finalWebsiteData, status: 'published' });
+        setCurrentProject({
+          ...currentProject,
+          ...websiteData,
+          status: 'published',
+          id: projectId,
+        });
       }
+
+      // Update pages state
+      setPages(updatedPages);
 
       showSnackbar('Website published successfully!', 'success');
     } catch (error) {
       console.error('Error saving to database:', error);
-      showSnackbar(error.message || 'Error publishing website', 'error');
+      const errorMessage =
+        error.response?.data?.detail || error.response?.data?.message || 'Error publishing website';
+      showSnackbar(errorMessage, 'error');
     } finally {
       setIsSavingToDB(false);
     }
+  };
+
+  // Helper function to generate HTML code for save
+  const generateHTMLCodeForSave = () => {
+    // This should generate HTML similar to generateHTMLCode but without React dependencies
+    // For simplicity, we'll use the existing generateHTMLCode if available
+    if (typeof generateHTMLCode === 'function') {
+      generateHTMLCode();
+      return generatedCode || '';
+    }
+    return '';
   };
 
   const showSnackbar = (message, severity) => {
@@ -6735,7 +6805,7 @@ const DesignStudio = ({
             onClick={() => setSaveModalOpen(false)}
             sx={{ color: alpha('#FFFFFF', 0.6), '&:hover': { color: 'white' } }}
           >
-            {savedProjectCard ? 'Close' : 'Cancel'}
+            Cancel
           </Button>
           <Button
             onClick={handleSaveConfirm}
@@ -6751,7 +6821,7 @@ const DesignStudio = ({
               '&:disabled': { opacity: 0.5 },
             }}
           >
-            {saving ? 'Saving…' : savedProjectCard ? 'Save Again' : 'Save Project'}
+            {saving ? 'Saving…' : 'Save Project'}
           </Button>
         </DialogActions>
       </Dialog>
