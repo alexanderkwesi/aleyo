@@ -143,7 +143,6 @@ class ProjectUpdate(BaseModel):
     name: Optional[str] = None
     customizations: Optional[Dict[str, Any]] = None
     html_code: Optional[str] = None
-    custom_slug: Optional[str] = None
 
 class IntegrationConfig(BaseModel):
     type: str  # 'forms', 'payment', 'email', 'calendar', 'ads'
@@ -774,26 +773,8 @@ async def update_project(
         project.customizations = updates.customizations
     if updates.html_code:
         project.html_code = updates.html_code
-    if updates.custom_slug is not None:
-        # Validate slug format
-        import re
-        slug = updates.custom_slug.strip()
-        if slug and not re.match(r'^[a-z0-9-]{3,50}$', slug):
-            raise HTTPException(status_code=400, detail="Slug must be 3-50 chars: lowercase letters, numbers, hyphens only")
-        # Check uniqueness (exclude current project)
-        if slug:
-            existing = db.query(Project).filter(
-                Project.published_url.contains(f'/{slug}'),
-                Project.id != project_id
-            ).first()
-            if existing:
-                raise HTTPException(status_code=409, detail="This URL slug is already taken")
-        # Store slug in customizations so it survives without a schema change
-        cust = dict(project.customizations or {})
-        cust['custom_slug'] = slug or None
-        project.customizations = cust
-
-    project.updated_at = datetime.now(timezone.utc)
+    
+    project.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(project)
     
@@ -852,17 +833,15 @@ async def publish_project(
     if not deduct_credits(db, str(current_user.id), 5):
         raise HTTPException(status_code=402, detail="Insufficient credits to publish")
     
-    # Use custom slug if set, otherwise fall back to project_id
-    custom_slug = (project.customizations or {}).get('custom_slug') or project_id
-    publish_url = f"https://aleyo.app/{custom_slug}"
+    # Generate a unique URL
+    publish_url = f"https://aleyo.app/{project_id}"
     project.published_url = publish_url
-    project.updated_at = datetime.now(timezone.utc)
+    project.updated_at = datetime.utcnow()
     db.commit()
-
+    
     return {
         "success": True,
         "published_url": publish_url,
-        "custom_slug": custom_slug,
         "message": "Website published successfully"
     }
 
@@ -919,6 +898,122 @@ async def generate_website_code(
     db.commit()
     
     return {"html_code": html_code}
+
+
+
+# Add to app.py after the existing endpoints
+
+class WebsitePublishRequest(BaseModel):
+    id: str
+    name: str
+    slug: str
+    components: List[Dict[str, Any]] = []
+    textElements: List[Dict[str, Any]] = []
+    imageElements: List[Dict[str, Any]] = []
+    uploadedImages: List[Dict[str, Any]] = []
+    styles: Dict[str, Any] = {}
+    lastEdited: str
+    type: str = "custom"
+    status: str = "published"
+    publishedAt: str
+    publishedUrl: str
+
+@app.post("/api/websites/publish")
+async def publish_website(
+    website_data: WebsitePublishRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Publish a website to the database"""
+    try:
+        # Check if project exists
+        project = db.query(Project).filter(Project.id == website_data.id).first()
+        
+        if project:
+            # Update existing project
+            project.name = website_data.name
+            project.customizations = {
+                "components": website_data.components,
+                "textElements": website_data.textElements,
+                "imageElements": website_data.imageElements,
+                "uploadedImages": website_data.uploadedImages,
+                "styles": website_data.styles,
+                "publishedAt": website_data.publishedAt,
+            }
+            project.html_code = generate_html_from_designs(
+                [], 
+                project.customizations, 
+                website_data.name
+            )
+            project.published_url = website_data.publishedUrl
+            project.updated_at = datetime.utcnow()
+        else:
+            # Create new project
+            project = Project(
+                id=website_data.id,
+                name=website_data.name,
+                user_id=current_user.id,
+                customizations={
+                    "components": website_data.components,
+                    "textElements": website_data.textElements,
+                    "imageElements": website_data.imageElements,
+                    "uploadedImages": website_data.uploadedImages,
+                    "styles": website_data.styles,
+                    "publishedAt": website_data.publishedAt,
+                },
+                html_code=generate_html_from_designs(
+                    [], 
+                    {
+                        "components": website_data.components,
+                        "textElements": website_data.textElements,
+                        "imageElements": website_data.imageElements,
+                        "uploadedImages": website_data.uploadedImages,
+                        "styles": website_data.styles,
+                    }, 
+                    website_data.name
+                ),
+                published_url=website_data.publishedUrl
+            )
+            db.add(project)
+        
+        db.commit()
+        db.refresh(project)
+        
+        return {
+            "success": True,
+            "project_id": str(project.id),
+            "published_url": project.published_url,
+            "message": "Website published successfully"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error publishing website: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+    
+    
+
+@app.get("/api/websites/check-slug")
+async def check_slug_uniqueness(
+    slug: str,
+    db: Session = Depends(get_db)
+):
+    """Check if a slug is available"""
+    # Check in projects table
+    projects = db.query(Project).all()
+    for project in projects:
+        if project.published_url and slug in project.published_url:
+            return {"isUnique": False}
+    
+    # Also check in published websites table if it exists
+    # This is a simple check - in production, you'd have a dedicated slugs table
+    
+    return {"isUnique": True}
+
+
+
+
+
 
 # ==================== Integration Endpoints ====================
 
@@ -1247,30 +1342,6 @@ async def get_usage_analytics(
             for tx in transactions[:10]
         ]
     }
-
-# ==================== Slug Check ====================
-
-@app.get("/api/projects/check-slug")
-async def check_slug(
-    slug: str,
-    project_id: Optional[str] = None,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Check whether a custom URL slug is available"""
-    import re
-    slug = slug.strip().lower()
-    if not re.match(r'^[a-z0-9-]{3,50}$', slug):
-        return {"available": False, "reason": "Slug must be 3-50 chars: lowercase letters, numbers, hyphens only"}
-
-    # Look for any project whose published_url ends with this slug
-    query = db.query(Project).filter(Project.published_url.ilike(f'%/{slug}'))
-    if project_id:
-        query = query.filter(Project.id != project_id)
-    taken = query.first()
-    if taken:
-        return {"available": False, "reason": "This URL is already taken"}
-    return {"available": True}
 
 # ==================== Health Check ====================
 
