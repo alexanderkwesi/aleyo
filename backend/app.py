@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, status
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, Depends, logger, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import List, Dict, Optional, Any
@@ -13,6 +13,11 @@ import secrets
 from enum import Enum
 import jwt
 from passlib.context import CryptContext
+from slowapi import Limiter
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from fastapi.responses import JSONResponse
 from database import (
     get_db, User, PasswordResetToken, Project, ProjectDesign,
     CreditTransaction, Integration, DesignTemplate, DesignComponent,
@@ -20,6 +25,14 @@ from database import (
 )
 
 app = FastAPI(title="Aleyo AI Website Builder API")
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_middleware(SlowAPIMiddleware)
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(status_code=429, content={"detail": "Login attempts exceeded. Please try again later."})
 
 # Security
 security = HTTPBearer()
@@ -31,9 +44,21 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 
 # CORS configuration
+import os
+
+ALLOWED_ORIGINS = [
+    "http://127.0.0.1:4000",
+    "http://127.0.0.1:8000",
+    "http://localhost:3000", "*"
+]
+
+_frontend_url = os.getenv("FRONTEND_URL", "")
+if _frontend_url:
+    ALLOWED_ORIGINS.append(_frontend_url)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:4000", "http://127.0.0.1:8000"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -55,6 +80,10 @@ class UserLogin(BaseModel):
     email: EmailStr
     password: str
 
+from pydantic import BaseModel
+from datetime import datetime
+from typing import Optional
+
 class UserResponse(BaseModel):
     id: str
     name: str
@@ -63,10 +92,15 @@ class UserResponse(BaseModel):
     created_at: datetime
     subscription_tier: str
 
+    class Config:
+        from_attributes = True
+
 class Token(BaseModel):
+    status: str
     access_token: str
     token_type: str
     user: UserResponse
+    redirect: Optional[str] = None
 
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
@@ -109,6 +143,7 @@ class ProjectUpdate(BaseModel):
     name: Optional[str] = None
     customizations: Optional[Dict[str, Any]] = None
     html_code: Optional[str] = None
+    custom_slug: Optional[str] = None
 
 class IntegrationConfig(BaseModel):
     type: str  # 'forms', 'payment', 'email', 'calendar', 'ads'
@@ -122,24 +157,14 @@ class CreditPurchase(BaseModel):
 
 # ==================== Helper Functions ====================
 
-def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+from datetime import datetime, timezone, timedelta
+from jose import jwt, JWTError
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a plain password against a hashed password"""
-    return pwd_context.verify(plain_password, hashed_password)
-    
-
-
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+def create_access_token(data: dict) -> str:
     to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
@@ -397,32 +422,39 @@ def generate_integration_code(config: IntegrationConfig) -> str:
 
 # ==================== Authentication Endpoints ====================
 
+import logging
+import bcrypt
+
+# Replace pwd_context setup and hash/verify functions with these:
+logger = logging.getLogger(__name__)
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+def verify_password(plain: str, hashed: str) -> bool:
+    return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+
+
 @app.post("/api/auth/signup", response_model=Token)
 async def signup(user_data: UserCreate, db: Session = Depends(get_db)):
-    """Create a new user account with 50 free credits"""
-    # Check if user already exists
     existing_user = db.query(User).filter(User.email == user_data.email).first()
     if existing_user:
         raise HTTPException(status_code=400, detail="Email already registered")
-    
-    # Create new user
+
     hashed_password = hash_password(user_data.password)
-    
+
     user = User(
         name=user_data.name,
         email=user_data.email,
         password_hash=hashed_password,
-        credits=50,  # Free credits
+        credits=50,
         subscription_tier="free"
     )
-    
     db.add(user)
     db.commit()
     db.refresh(user)
-    
-    # Create access token
+
     access_token = create_access_token(data={"sub": str(user.id)})
-    
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -436,33 +468,39 @@ async def signup(user_data: UserCreate, db: Session = Depends(get_db)):
         }
     }
 
+
 @app.post("/api/auth/login", response_model=Token)
-async def login(login_data: UserLogin, db: Session = Depends(get_db)):
-    """Authenticate user and return JWT token"""
-    # Find user by email
+@limiter.limit("5 per minute")
+async def login(request: Request, login_data: UserLogin, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == login_data.email).first()
-    
-    # Fix: Remove hash_password from verify_password call
-    # The verify_password function should hash the input password and compare
-    # with the stored hash, not double-hash the provided password
+
     if not user or not verify_password(login_data.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    
-    # Create access token
-    access_token = create_access_token(data={"sub": str(user.id)})
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": {
-            "id": str(user.id),
-            "name": user.name,
-            "email": user.email,
-            "credits": user.credits,
-            "created_at": user.created_at,
-            "subscription_tier": user.subscription_tier
+        logger.warning(f"Failed login attempt for email: {login_data.email}")
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid email or password",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    else:
+        user.last_login = datetime.now(timezone.utc)
+        db.commit()
+
+        access_token = create_access_token(data={"sub": str(user.id)})
+        return {
+            "status": "success",
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": {
+                "id": str(user.id),
+                "name": user.name,
+                "email": user.email,
+                "credits": user.credits,
+                "created_at": user.created_at.isoformat(),
+                "subscription_tier": user.subscription_tier
+            },
+            "redirect": "/dashboard"
         }
-    }
+
 
 @app.post("/api/auth/forgot-password")
 async def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db)):
@@ -736,8 +774,26 @@ async def update_project(
         project.customizations = updates.customizations
     if updates.html_code:
         project.html_code = updates.html_code
-    
-    project.updated_at = datetime.utcnow()
+    if updates.custom_slug is not None:
+        # Validate slug format
+        import re
+        slug = updates.custom_slug.strip()
+        if slug and not re.match(r'^[a-z0-9-]{3,50}$', slug):
+            raise HTTPException(status_code=400, detail="Slug must be 3-50 chars: lowercase letters, numbers, hyphens only")
+        # Check uniqueness (exclude current project)
+        if slug:
+            existing = db.query(Project).filter(
+                Project.published_url.contains(f'/{slug}'),
+                Project.id != project_id
+            ).first()
+            if existing:
+                raise HTTPException(status_code=409, detail="This URL slug is already taken")
+        # Store slug in customizations so it survives without a schema change
+        cust = dict(project.customizations or {})
+        cust['custom_slug'] = slug or None
+        project.customizations = cust
+
+    project.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(project)
     
@@ -796,15 +852,17 @@ async def publish_project(
     if not deduct_credits(db, str(current_user.id), 5):
         raise HTTPException(status_code=402, detail="Insufficient credits to publish")
     
-    # Generate a unique URL
-    publish_url = f"https://aleyo.app/{project_id}"
+    # Use custom slug if set, otherwise fall back to project_id
+    custom_slug = (project.customizations or {}).get('custom_slug') or project_id
+    publish_url = f"https://aleyo.app/{custom_slug}"
     project.published_url = publish_url
-    project.updated_at = datetime.utcnow()
+    project.updated_at = datetime.now(timezone.utc)
     db.commit()
-    
+
     return {
         "success": True,
         "published_url": publish_url,
+        "custom_slug": custom_slug,
         "message": "Website published successfully"
     }
 
@@ -1189,6 +1247,30 @@ async def get_usage_analytics(
             for tx in transactions[:10]
         ]
     }
+
+# ==================== Slug Check ====================
+
+@app.get("/api/projects/check-slug")
+async def check_slug(
+    slug: str,
+    project_id: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Check whether a custom URL slug is available"""
+    import re
+    slug = slug.strip().lower()
+    if not re.match(r'^[a-z0-9-]{3,50}$', slug):
+        return {"available": False, "reason": "Slug must be 3-50 chars: lowercase letters, numbers, hyphens only"}
+
+    # Look for any project whose published_url ends with this slug
+    query = db.query(Project).filter(Project.published_url.ilike(f'%/{slug}'))
+    if project_id:
+        query = query.filter(Project.id != project_id)
+    taken = query.first()
+    if taken:
+        return {"available": False, "reason": "This URL is already taken"}
+    return {"available": True}
 
 # ==================== Health Check ====================
 
