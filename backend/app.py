@@ -1,30 +1,54 @@
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, Depends, logger, status
+# app.py - Complete rewritten file
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import List, Dict, Optional, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, func, text
 import asyncio
 import json
 import uuid
 import secrets
 from enum import Enum
-import jwt
 from passlib.context import CryptContext
 from slowapi import Limiter
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from fastapi.responses import JSONResponse
-from database import (
-    get_db, User, PasswordResetToken, Project, ProjectDesign,
-    CreditTransaction, Integration, DesignTemplate, DesignComponent,
-    ProjectComponent, AnalyticsEvent, init_db
+from jose import jwt, JWTError
+from fastapi import Query
+import re
+import logging
+import bcrypt
+import os
+
+# Import routers
+from seed_integrations import router as integrations_router
+
+import seed_integrations
+# Override the dependency in seed_integrations after get_current_user is defined
+# This ensures that the router in seed_integrations uses the correct authentication
+
+# Import database utilities
+from database import get_db, init_db
+
+# Import models
+from models import (
+    User, Project, CreditTransaction, Integration, 
+    Design, Template, Component, AnalyticsEvent, Slug, project_designs
 )
 
+# ==================== App Initialization ====================
+
 app = FastAPI(title="Aleyo AI Website Builder API")
+
+# Setup logging
+logger = logging.getLogger(__name__)
+
+# ==================== Rate Limiting ====================
 
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
@@ -34,22 +58,23 @@ app.add_middleware(SlowAPIMiddleware)
 async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
     return JSONResponse(status_code=429, content={"detail": "Login attempts exceeded. Please try again later."})
 
-# Security
+# ==================== Security ====================
+
 security = HTTPBearer()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # JWT Configuration
-SECRET_KEY = "your-secret-key-change-in-production"  # Change this in production
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 
-# CORS configuration
-import os
+# ==================== CORS Configuration ====================
 
 ALLOWED_ORIGINS = [
     "http://127.0.0.1:4000",
     "http://127.0.0.1:8000",
-    "http://localhost:3000", "*"
+    "http://localhost:3000",
+    "http://localhost:3001",
 ]
 
 _frontend_url = os.getenv("FRONTEND_URL", "")
@@ -64,10 +89,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize database on startup
+# ==================== Include Routers ====================
+
+app.include_router(integrations_router, prefix="/api")
+
+# ==================== Startup Event ====================
+
 @app.on_event("startup")
 async def startup_event():
     init_db()
+    logger.info("Application started successfully")
 
 # ==================== Pydantic Models ====================
 
@@ -79,10 +110,6 @@ class UserCreate(BaseModel):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
-
-from pydantic import BaseModel
-from datetime import datetime
-from typing import Optional
 
 class UserResponse(BaseModel):
     id: str
@@ -109,19 +136,19 @@ class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str
 
-class DesignComponent(BaseModel):
+class DesignComponentModel(BaseModel):
     id: str
     type: str
     styles: Dict[str, Any]
     content: Dict[str, Any]
 
-class DesignTemplate(BaseModel):
+class DesignTemplateModel(BaseModel):
     id: str
     name: str
     category: str
     layout: Dict[str, Any]
     styles: Dict[str, Any]
-    components: List[DesignComponent]
+    components: List[DesignComponentModel]
 
 class WebsiteProject(BaseModel):
     id: str
@@ -133,6 +160,21 @@ class WebsiteProject(BaseModel):
     updated_at: datetime
     user_id: str
     published_url: Optional[str] = None
+    
+class WebsitePublishRequest(BaseModel):
+    id: str
+    name: str
+    slug: str
+    components: List[Dict[str, Any]] = []
+    textElements: List[Dict[str, Any]] = []
+    imageElements: List[Dict[str, Any]] = []
+    uploadedImages: List[Dict[str, Any]] = []
+    styles: Dict[str, Any] = {}
+    lastEdited: str
+    type: str = "custom"
+    status: str = "published"
+    publishedAt: str
+    publishedUrl: str
 
 class ProjectCreate(BaseModel):
     name: str
@@ -145,19 +187,20 @@ class ProjectUpdate(BaseModel):
     html_code: Optional[str] = None
 
 class IntegrationConfig(BaseModel):
-    type: str  # 'forms', 'payment', 'email', 'calendar', 'ads'
+    type: str
     provider: str
     api_key: Optional[str] = None
-    settings: Dict[str, Any]
+    settings: Dict[str, Any] = {}
 
 class CreditPurchase(BaseModel):
-    amount: int  # Number of credits to purchase
+    amount: int
     payment_method: str
 
-# ==================== Helper Functions ====================
+class IntegrationConnectRequest(BaseModel):
+    project_id: str
+    config_data: Dict[str, Any] = {}
 
-from datetime import datetime, timezone, timedelta
-from jose import jwt, JWTError
+# ==================== Helper Functions ====================
 
 def create_access_token(data: dict) -> str:
     to_encode = data.copy()
@@ -178,7 +221,7 @@ async def get_current_user(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid authentication credentials",
             )
-    except jwt.PyJWTError:
+    except JWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication credentials",
@@ -192,10 +235,18 @@ async def get_current_user(
         )
     return user
 
+# Override the dependency in seed_integrations after get_current_user has been defined
+seed_integrations.get_current_user_dependency = get_current_user
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+def verify_password(plain: str, hashed: str) -> bool:
+    return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+
 def deduct_credits(db: Session, user_id: str, amount: int) -> bool:
     user = db.query(User).filter(User.id == user_id).first()
-    if user and user.credits >= amount:
-        # Create transaction record (credit will be updated by trigger)
+    if user and user.credits_balance >= amount:
         transaction = CreditTransaction(
             user_id=user_id,
             amount=-amount,
@@ -211,7 +262,6 @@ def deduct_credits(db: Session, user_id: str, amount: int) -> bool:
 def add_credits(db: Session, user_id: str, amount: int, description: str = "Credit purchase"):
     user = db.query(User).filter(User.id == user_id).first()
     if user:
-        # Create transaction record (credit will be updated by trigger)
         transaction = CreditTransaction(
             user_id=user_id,
             amount=amount,
@@ -224,50 +274,19 @@ def add_credits(db: Session, user_id: str, amount: int, description: str = "Cred
         return True
     return False
 
-def get_predefined_designs(db: Session) -> Dict[str, Any]:
-    """Get all predefined designs from database"""
-    designs = db.query(DesignTemplate).all()
-    result = {}
-    for design in designs:
-        components = db.query(DesignComponent).filter(
-            DesignComponent.design_id == design.id
-        ).order_by(DesignComponent.position).all()
-        
-        result[design.id] = {
-            "id": design.id,
-            "name": design.name,
-            "category": design.category,
-            "layout": design.layout,
-            "styles": design.styles,
-            "components": [
-                {
-                    "id": comp.component_id,
-                    "type": comp.component_type,
-                    "styles": comp.styles,
-                    "content": comp.content
-                }
-                for comp in components
-            ]
-        }
-    return result
-
 def generate_html_from_designs(designs: List[Dict], customizations: Dict, project_name: str) -> str:
     """Generate HTML from merged designs"""
     merged_styles = {}
     merged_components = []
     
     for design in designs:
-        # Merge styles
         for key, value in design.get("styles", {}).items():
             merged_styles[key] = value
-        
-        # Merge components
         merged_components.extend(design.get("components", []))
     
-    # Apply customizations
-    merged_styles.update(customizations)
+    if customizations and "styles" in customizations:
+        merged_styles.update(customizations["styles"])
     
-    # Generate HTML
     components_html = ""
     for component in merged_components:
         components_html += generate_component_html(component, merged_styles)
@@ -332,7 +351,6 @@ def generate_html_from_designs(designs: List[Dict], customizations: Dict, projec
     """
 
 def generate_component_html(component: Dict, styles: Dict) -> str:
-    """Generate HTML for a single component"""
     comp_type = component.get("type", "")
     content = component.get("content", {})
     
@@ -348,7 +366,6 @@ def generate_component_html(component: Dict, styles: Dict) -> str:
     return ""
 
 def generate_integration_code(config: IntegrationConfig) -> str:
-    """Generate HTML/JS code for the integration"""
     if config.type == "forms":
         if config.provider == "formspree":
             return f"""
@@ -367,15 +384,15 @@ def generate_integration_code(config: IntegrationConfig) -> str:
             <button id="payment-button">Pay Now</button>
             <script>
                 const stripe = Stripe('{config.api_key}');
-                // Add payment logic here
             </script>
             """
     
     elif config.type == "email":
         if config.provider == "mailchimp":
+            dc = config.settings.get('dc', 'usX')
             return f"""
             <div id="mc_embed_signup">
-                <form action="https://{config.settings.get('dc', 'usX')}.list-manage.com/subscribe/post" method="POST">
+                <form action="https://{dc}.list-manage.com/subscribe/post" method="POST">
                     <input type="email" name="EMAIL" placeholder="Subscribe to newsletter" required>
                     <button type="submit">Subscribe</button>
                 </form>
@@ -384,10 +401,11 @@ def generate_integration_code(config: IntegrationConfig) -> str:
     
     elif config.type == "calendar":
         if config.provider == "calendly":
+            username = config.settings.get('username', '')
             return f"""
             <link href="https://assets.calendly.com/assets/external/widget.css" rel="stylesheet">
             <script src="https://assets.calendly.com/assets/external/widget.js" type="text/javascript" async></script>
-            <div class="calendly-inline-widget" data-url="https://calendly.com/{config.settings.get('username')}" style="min-width:320px;height:630px;"></div>
+            <div class="calendly-inline-widget" data-url="https://calendly.com/{username}" style="min-width:320px;height:630px;"></div>
             """
     
     elif config.type == "ads":
@@ -421,19 +439,6 @@ def generate_integration_code(config: IntegrationConfig) -> str:
 
 # ==================== Authentication Endpoints ====================
 
-import logging
-import bcrypt
-
-# Replace pwd_context setup and hash/verify functions with these:
-logger = logging.getLogger(__name__)
-
-def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-
-def verify_password(plain: str, hashed: str) -> bool:
-    return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
-
-
 @app.post("/api/auth/signup", response_model=Token)
 async def signup(user_data: UserCreate, db: Session = Depends(get_db)):
     existing_user = db.query(User).filter(User.email == user_data.email).first()
@@ -443,10 +448,11 @@ async def signup(user_data: UserCreate, db: Session = Depends(get_db)):
     hashed_password = hash_password(user_data.password)
 
     user = User(
+        id=str(uuid.uuid4()),
         name=user_data.name,
         email=user_data.email,
         password_hash=hashed_password,
-        credits=50,
+        credits_balance=50,
         subscription_tier="free"
     )
     db.add(user)
@@ -455,18 +461,18 @@ async def signup(user_data: UserCreate, db: Session = Depends(get_db)):
 
     access_token = create_access_token(data={"sub": str(user.id)})
     return {
+        "status": "success",
         "access_token": access_token,
         "token_type": "bearer",
         "user": {
             "id": str(user.id),
             "name": user.name,
             "email": user.email,
-            "credits": user.credits,
+            "credits": user.credits_balance,
             "created_at": user.created_at,
             "subscription_tier": user.subscription_tier
         }
     }
-
 
 @app.post("/api/auth/login", response_model=Token)
 @limiter.limit("5 per minute")
@@ -480,103 +486,81 @@ async def login(request: Request, login_data: UserLogin, db: Session = Depends(g
             detail="Invalid email or password",
             headers={"WWW-Authenticate": "Bearer"}
         )
-    else:
-        user.last_login = datetime.now(timezone.utc)
-        db.commit()
+    
+    user.last_login = datetime.now(timezone.utc)
+    db.commit()
 
-        access_token = create_access_token(data={"sub": str(user.id)})
-        return {
-            "status": "success",
-            "access_token": access_token,
-            "token_type": "bearer",
-            "user": {
-                "id": str(user.id),
-                "name": user.name,
-                "email": user.email,
-                "credits": user.credits,
-                "created_at": user.created_at.isoformat(),
-                "subscription_tier": user.subscription_tier
-            },
-            "redirect": "/dashboard"
-        }
-
+    access_token = create_access_token(data={"sub": str(user.id)})
+    return {
+        "status": "success",
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": str(user.id),
+            "name": user.name,
+            "email": user.email,
+            "credits": user.credits_balance,
+            "created_at": user.created_at.isoformat(),
+            "subscription_tier": user.subscription_tier
+        },
+        "redirect": "/dashboard"
+    }
 
 @app.post("/api/auth/forgot-password")
 async def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db)):
-    """Send password reset email"""
-    # Find user by email
     user = db.query(User).filter(User.email == request.email).first()
     
     if not user:
-        # Return success even if user not found for security
         return {"message": "If your email is registered, you will receive a password reset link"}
     
-    # Generate reset token
     reset_token = secrets.token_urlsafe(32)
-    reset_record = PasswordResetToken(
-        token=reset_token,
-        user_id=user.id,
-        expires_at=datetime.utcnow() + timedelta(hours=24)
-    )
-    
-    db.add(reset_record)
+    user.password_reset_token = reset_token
+    user.password_reset_expires = datetime.now(timezone.utc) + timedelta(hours=24)
     db.commit()
     
-    # In production, send email with reset link
-    # For now, return token for testing
     return {
         "message": "Password reset email sent",
-        "reset_token": reset_token  # Remove in production
+        "reset_token": reset_token
     }
 
 @app.post("/api/auth/reset-password")
 async def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db)):
-    """Reset password using token"""
-    reset_data = db.query(PasswordResetToken).filter(
-        PasswordResetToken.token == request.token,
-        PasswordResetToken.expires_at > datetime.utcnow()
+    user = db.query(User).filter(
+        User.password_reset_token == request.token,
+        User.password_reset_expires > datetime.now(timezone.utc)
     ).first()
     
-    if not reset_data:
+    if not user:
         raise HTTPException(status_code=400, detail="Invalid or expired reset token")
     
-    user = db.query(User).filter(User.id == reset_data.user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # Update password
     user.password_hash = hash_password(request.new_password)
-    
-    # Delete used token
-    db.delete(reset_data)
+    user.password_reset_token = None
+    user.password_reset_expires = None
     db.commit()
     
     return {"message": "Password reset successfully"}
 
 @app.get("/api/auth/me", response_model=UserResponse)
 async def get_current_user_info(current_user: User = Depends(get_current_user)):
-    """Get current authenticated user info"""
     return {
         "id": str(current_user.id),
         "name": current_user.name,
         "email": current_user.email,
-        "credits": current_user.credits,
+        "credits": current_user.credits_balance,
         "created_at": current_user.created_at,
         "subscription_tier": current_user.subscription_tier
     }
 
 @app.post("/api/auth/logout")
 async def logout(current_user: User = Depends(get_current_user)):
-    """Logout user (client-side token removal)"""
     return {"message": "Logged out successfully"}
 
 # ==================== Credit Management Endpoints ====================
 
 @app.get("/api/credits/balance")
 async def get_credit_balance(current_user: User = Depends(get_current_user)):
-    """Get current user's credit balance"""
     return {
-        "credits": current_user.credits,
+        "credits": current_user.credits_balance,
         "subscription_tier": current_user.subscription_tier
     }
 
@@ -585,7 +569,6 @@ async def get_credit_transactions(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get credit transaction history"""
     transactions = db.query(CreditTransaction).filter(
         CreditTransaction.user_id == current_user.id
     ).order_by(desc(CreditTransaction.created_at)).all()
@@ -607,8 +590,6 @@ async def purchase_credits(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Purchase additional credits"""
-    # Credit pricing (in cents per credit)
     credit_prices = {
         50: 2.99,
         100: 4.99,
@@ -617,7 +598,6 @@ async def purchase_credits(
         5000: 149.99
     }
     
-    # Find the closest package
     package_price = None
     for credits, price in credit_prices.items():
         if purchase.amount <= credits:
@@ -625,19 +605,15 @@ async def purchase_credits(
             break
     
     if not package_price:
-        package_price = 299.99  # Custom pricing for large amounts
+        package_price = 299.99
     
-    # In production, integrate with Stripe/PayPal here
-    # For demo, just add credits
     add_credits(db, str(current_user.id), purchase.amount, f"Purchase of {purchase.amount} credits")
-    
-    # Refresh user data
     db.refresh(current_user)
     
     return {
         "success": True,
         "credits_added": purchase.amount,
-        "total_credits": current_user.credits,
+        "total_credits": current_user.credits_balance,
         "amount_charged": package_price,
         "payment_method": purchase.payment_method
     }
@@ -650,36 +626,47 @@ async def create_project(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Create a new website project"""
-    # Check if user has enough credits (1 credit per project)
     if not deduct_credits(db, str(current_user.id), 1):
         raise HTTPException(status_code=402, detail="Insufficient credits")
     
+    global_styles = project_data.customizations.get("styles", {}) if project_data.customizations else {}
+    layout_config = project_data.customizations.get("layout", {}) if project_data.customizations else {}
+    
     project = Project(
+        id=str(uuid.uuid4()),
         name=project_data.name,
         user_id=current_user.id,
-        customizations=project_data.customizations
+        global_styles=global_styles,
+        layout_config=layout_config
     )
     
     db.add(project)
     db.commit()
     db.refresh(project)
     
-    # Add designs to project
     for design_id in project_data.designs:
-        project_design = ProjectDesign(
+        stmt = project_designs.insert().values(
             project_id=project.id,
-            design_id=design_id
+            design_id=design_id,
+            merged_order=0
         )
-        db.add(project_design)
+        db.execute(stmt)
     
     db.commit()
+    
+    result = db.execute(
+        project_designs.select().where(project_designs.c.project_id == project.id)
+    )
+    design_ids = [row.design_id for row in result]
     
     return {
         "id": str(project.id),
         "name": project.name,
-        "designs": project_data.designs,
-        "customizations": project.customizations,
+        "designs": design_ids,
+        "customizations": {
+            "styles": project.global_styles,
+            "layout": project.layout_config
+        },
         "html_code": project.html_code,
         "created_at": project.created_at,
         "updated_at": project.updated_at,
@@ -692,24 +679,25 @@ async def get_user_projects(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get all projects for current user"""
     projects = db.query(Project).filter(
         Project.user_id == current_user.id
     ).order_by(desc(Project.updated_at)).all()
     
     result = []
     for project in projects:
-        # Get designs for this project
-        designs = db.query(ProjectDesign).filter(
-            ProjectDesign.project_id == project.id
-        ).all()
-        design_ids = [d.design_id for d in designs]
+        result_designs = db.execute(
+            project_designs.select().where(project_designs.c.project_id == project.id)
+        )
+        design_ids = [row.design_id for row in result_designs]
         
         result.append({
             "id": str(project.id),
             "name": project.name,
             "designs": design_ids,
-            "customizations": project.customizations,
+            "customizations": {
+                "styles": project.global_styles,
+                "layout": project.layout_config
+            },
             "html_code": project.html_code,
             "created_at": project.created_at,
             "updated_at": project.updated_at,
@@ -725,7 +713,6 @@ async def get_project(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get a specific project"""
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -733,17 +720,19 @@ async def get_project(
     if str(project.user_id) != str(current_user.id):
         raise HTTPException(status_code=403, detail="Access denied")
     
-    # Get designs for this project
-    designs = db.query(ProjectDesign).filter(
-        ProjectDesign.project_id == project.id
-    ).all()
-    design_ids = [d.design_id for d in designs]
+    result = db.execute(
+        project_designs.select().where(project_designs.c.project_id == project.id)
+    )
+    design_ids = [row.design_id for row in result]
     
     return {
         "id": str(project.id),
         "name": project.name,
         "designs": design_ids,
-        "customizations": project.customizations,
+        "customizations": {
+            "styles": project.global_styles,
+            "layout": project.layout_config
+        },
         "html_code": project.html_code,
         "created_at": project.created_at,
         "updated_at": project.updated_at,
@@ -758,7 +747,6 @@ async def update_project(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Update a project"""
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -766,29 +754,31 @@ async def update_project(
     if str(project.user_id) != str(current_user.id):
         raise HTTPException(status_code=403, detail="Access denied")
     
-    # Update fields
     if updates.name:
         project.name = updates.name
     if updates.customizations:
-        project.customizations = updates.customizations
+        project.global_styles = updates.customizations.get("styles", project.global_styles)
+        project.layout_config = updates.customizations.get("layout", project.layout_config)
     if updates.html_code:
         project.html_code = updates.html_code
     
-    project.updated_at = datetime.utcnow()
+    project.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(project)
     
-    # Get designs for this project
-    designs = db.query(ProjectDesign).filter(
-        ProjectDesign.project_id == project.id
-    ).all()
-    design_ids = [d.design_id for d in designs]
+    result = db.execute(
+        project_designs.select().where(project_designs.c.project_id == project.id)
+    )
+    design_ids = [row.design_id for row in result]
     
     return {
         "id": str(project.id),
         "name": project.name,
         "designs": design_ids,
-        "customizations": project.customizations,
+        "customizations": {
+            "styles": project.global_styles,
+            "layout": project.layout_config
+        },
         "html_code": project.html_code,
         "created_at": project.created_at,
         "updated_at": project.updated_at,
@@ -802,7 +792,6 @@ async def delete_project(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Delete a project"""
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -821,7 +810,6 @@ async def publish_project(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Publish a website"""
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -829,19 +817,50 @@ async def publish_project(
     if str(project.user_id) != str(current_user.id):
         raise HTTPException(status_code=403, detail="Access denied")
     
-    # Check if user has enough credits (5 credits to publish)
     if not deduct_credits(db, str(current_user.id), 5):
         raise HTTPException(status_code=402, detail="Insufficient credits to publish")
     
-    # Generate a unique URL
-    publish_url = f"https://aleyo.app/{project_id}"
+    slug = re.sub(r'[^a-z0-9-]', '', project.name.lower().replace(' ', '-'))
+    if not slug:
+        slug = f"project-{project.id[:8]}"
+    
+    base_slug = slug
+    counter = 1
+    while True:
+        existing_slug = db.query(Slug).filter(Slug.slug == slug).first()
+        if existing_slug:
+            slug = f"{base_slug}-{counter}"
+            counter += 1
+            continue
+        
+        existing_project = db.query(Project).filter(
+            Project.published_url.like(f"%/p/{slug}%")
+        ).first()
+        if existing_project and existing_project.id != project.id:
+            slug = f"{base_slug}-{counter}"
+            counter += 1
+            continue
+        
+        break
+    
+    publish_url = f"{os.getenv('FRONTEND_URL', 'https://aleyo.app')}/p/{slug}"
     project.published_url = publish_url
-    project.updated_at = datetime.utcnow()
+    project.published_at = datetime.now(timezone.utc)
+    project.updated_at = datetime.now(timezone.utc)
+    
+    slug_entry = db.query(Slug).filter(Slug.project_id == project.id).first()
+    if slug_entry:
+        slug_entry.slug = slug
+    else:
+        slug_entry = Slug(slug=slug, project_id=project.id)
+        db.add(slug_entry)
+    
     db.commit()
     
     return {
         "success": True,
         "published_url": publish_url,
+        "slug": slug,
         "message": "Website published successfully"
     }
 
@@ -851,7 +870,6 @@ async def generate_website_code(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Generate HTML/CSS/JS code for the website"""
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -859,31 +877,29 @@ async def generate_website_code(
     if str(project.user_id) != str(current_user.id):
         raise HTTPException(status_code=403, detail="Access denied")
     
-    # Get designs for this project
-    project_designs = db.query(ProjectDesign).filter(
-        ProjectDesign.project_id == project.id
-    ).all()
+    result = db.execute(
+        project_designs.select().where(project_designs.c.project_id == project.id)
+    )
+    design_ids = [row.design_id for row in result]
     
     designs = []
-    for pd in project_designs:
-        design_template = db.query(DesignTemplate).filter(
-            DesignTemplate.id == pd.design_id
-        ).first()
-        if design_template:
-            components = db.query(DesignComponent).filter(
-                DesignComponent.design_id == design_template.id
-            ).order_by(DesignComponent.position).all()
+    for design_id in design_ids:
+        design = db.query(Design).filter(Design.id == design_id).first()
+        if design:
+            components = db.query(Component).filter(
+                Component.design_id == design.id
+            ).order_by(Component.order).all()
             
             designs.append({
-                "id": design_template.id,
-                "name": design_template.name,
-                "category": design_template.category,
-                "layout": design_template.layout,
-                "styles": design_template.styles,
+                "id": design.id,
+                "name": design.name,
+                "category": design.category,
+                "layout": design.layout,
+                "styles": design.styles,
                 "components": [
                     {
-                        "id": comp.component_id,
-                        "type": comp.component_type,
+                        "id": comp.id,
+                        "type": comp.type,
                         "styles": comp.styles,
                         "content": comp.content
                     }
@@ -891,32 +907,17 @@ async def generate_website_code(
                 ]
             })
     
-    # Generate HTML
-    html_code = generate_html_from_designs(designs, project.customizations or {}, project.name)
+    customizations = {
+        "styles": project.global_styles or {},
+        "layout": project.layout_config or {}
+    }
+    
+    html_code = generate_html_from_designs(designs, customizations, project.name)
     project.html_code = html_code
-    project.updated_at = datetime.utcnow()
+    project.updated_at = datetime.now(timezone.utc)
     db.commit()
     
     return {"html_code": html_code}
-
-
-
-# Add to app.py after the existing endpoints
-
-class WebsitePublishRequest(BaseModel):
-    id: str
-    name: str
-    slug: str
-    components: List[Dict[str, Any]] = []
-    textElements: List[Dict[str, Any]] = []
-    imageElements: List[Dict[str, Any]] = []
-    uploadedImages: List[Dict[str, Any]] = []
-    styles: Dict[str, Any] = {}
-    lastEdited: str
-    type: str = "custom"
-    status: str = "published"
-    publishedAt: str
-    publishedUrl: str
 
 @app.post("/api/websites/publish")
 async def publish_website(
@@ -924,57 +925,57 @@ async def publish_website(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Publish a website to the database"""
     try:
-        # Check if project exists
         project = db.query(Project).filter(Project.id == website_data.id).first()
         
+        customizations = {
+            "components": website_data.components,
+            "textElements": website_data.textElements,
+            "imageElements": website_data.imageElements,
+            "uploadedImages": website_data.uploadedImages,
+            "styles": website_data.styles,
+            "publishedAt": website_data.publishedAt,
+        }
+        
         if project:
-            # Update existing project
             project.name = website_data.name
-            project.customizations = {
-                "components": website_data.components,
-                "textElements": website_data.textElements,
-                "imageElements": website_data.imageElements,
-                "uploadedImages": website_data.uploadedImages,
-                "styles": website_data.styles,
-                "publishedAt": website_data.publishedAt,
-            }
-            project.html_code = generate_html_from_designs(
-                [], 
-                project.customizations, 
-                website_data.name
-            )
+            project.global_styles = website_data.styles
+            project.html_code = generate_html_from_designs([], customizations, website_data.name)
             project.published_url = website_data.publishedUrl
-            project.updated_at = datetime.utcnow()
+            project.published_at = datetime.now(timezone.utc)
+            project.updated_at = datetime.now(timezone.utc)
         else:
-            # Create new project
             project = Project(
                 id=website_data.id,
                 name=website_data.name,
                 user_id=current_user.id,
-                customizations={
-                    "components": website_data.components,
-                    "textElements": website_data.textElements,
-                    "imageElements": website_data.imageElements,
-                    "uploadedImages": website_data.uploadedImages,
-                    "styles": website_data.styles,
-                    "publishedAt": website_data.publishedAt,
-                },
-                html_code=generate_html_from_designs(
-                    [], 
-                    {
-                        "components": website_data.components,
-                        "textElements": website_data.textElements,
-                        "imageElements": website_data.imageElements,
-                        "uploadedImages": website_data.uploadedImages,
-                        "styles": website_data.styles,
-                    }, 
-                    website_data.name
-                ),
-                published_url=website_data.publishedUrl
+                global_styles=website_data.styles,
+                html_code=generate_html_from_designs([], customizations, website_data.name),
+                published_url=website_data.publishedUrl,
+                published_at=datetime.now(timezone.utc)
             )
             db.add(project)
+        
+        slug = website_data.slug
+        if not slug:
+            slug = re.sub(r'[^a-z0-9-]', '', website_data.name.lower().replace(' ', '-'))
+        
+        base_slug = slug
+        counter = 1
+        while True:
+            existing_slug = db.query(Slug).filter(Slug.slug == slug).first()
+            if existing_slug and existing_slug.project_id != project.id:
+                slug = f"{base_slug}-{counter}"
+                counter += 1
+                continue
+            break
+        
+        slug_entry = db.query(Slug).filter(Slug.project_id == project.id).first()
+        if slug_entry:
+            slug_entry.slug = slug
+        else:
+            slug_entry = Slug(slug=slug, project_id=project.id)
+            db.add(slug_entry)
         
         db.commit()
         db.refresh(project)
@@ -989,31 +990,51 @@ async def publish_website(
     except Exception as e:
         logger.error(f"Error publishing website: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-    
-    
-    
 
 @app.get("/api/websites/check-slug")
 async def check_slug_uniqueness(
-    slug: str,
+    slug: str = Query(..., min_length=3, max_length=50, regex="^[a-z0-9-]+$"),
+    exclude_id: Optional[str] = Query(None, description="Project ID to exclude from check"),
     db: Session = Depends(get_db)
 ):
-    """Check if a slug is available"""
-    # Check in projects table
-    projects = db.query(Project).all()
+    if not re.match(r'^[a-z0-9-]+$', slug):
+        return {"isUnique": False, "message": "Slug can only contain lowercase letters, numbers, and hyphens"}
+    
+    if len(slug) < 3 or len(slug) > 50:
+        return {"isUnique": False, "message": "Slug must be between 3 and 50 characters"}
+    
+    slugs_query = db.query(Slug).filter(Slug.slug == slug)
+    if exclude_id:
+        slugs_query = slugs_query.filter(Slug.project_id != exclude_id)
+    
+    if slugs_query.first():
+        return {
+            "isUnique": False, 
+            "message": f"The URL path '/{slug}' is already taken. Please choose another one."
+        }
+    
+    projects_query = db.query(Project)
+    if exclude_id:
+        projects_query = projects_query.filter(Project.id != exclude_id)
+    
+    projects = projects_query.all()
+    
     for project in projects:
-        if project.published_url and slug in project.published_url:
-            return {"isUnique": False}
+        if project.published_url:
+            url_parts = project.published_url.rstrip('/').split('/')
+            if url_parts and url_parts[-1] == slug:
+                return {
+                    "isUnique": False, 
+                    "message": f"The URL path '/{slug}' is already taken. Please choose another one."
+                }
+            
+            if f"/p/{slug}" in project.published_url or f"/{slug}" in project.published_url:
+                return {
+                    "isUnique": False, 
+                    "message": f"The URL path '/{slug}' is already taken. Please choose another one."
+                }
     
-    # Also check in published websites table if it exists
-    # This is a simple check - in production, you'd have a dedicated slugs table
-    
-    return {"isUnique": True}
-
-
-
-
-
+    return {"isUnique": True, "message": "Slug is available!"}
 
 # ==================== Integration Endpoints ====================
 
@@ -1024,7 +1045,6 @@ async def add_integration(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Add a third-party integration to a project"""
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -1033,6 +1053,7 @@ async def add_integration(
         raise HTTPException(status_code=403, detail="Access denied")
     
     integration = Integration(
+        id=str(uuid.uuid4()),
         project_id=project.id,
         type=config.type,
         provider=config.provider,
@@ -1044,7 +1065,6 @@ async def add_integration(
     db.commit()
     db.refresh(integration)
     
-    # Generate integration code
     integration_code = generate_integration_code(config)
     
     return {
@@ -1053,13 +1073,43 @@ async def add_integration(
         "integration_code": integration_code
     }
 
+@app.get("/api/integrations")
+async def get_user_integrations(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get all integrations for the current user's projects"""
+    user_projects = db.query(Project).filter(Project.user_id == current_user.id).all()
+    project_ids = [p.id for p in user_projects]
+    
+    if not project_ids:
+        return []
+    
+    integrations = db.query(Integration).filter(
+        Integration.project_id.in_(project_ids)
+    ).all()
+    
+    return [
+        {
+            "id": str(i.id),
+            "project_id": str(i.project_id),
+            "type": i.type,
+            "provider": i.provider,
+            "api_key": i.api_key,
+            "settings": i.settings,
+            "is_active": i.is_active,
+            "created_at": i.created_at,
+            "updated_at": i.updated_at
+        }
+        for i in integrations
+    ]
+
 @app.get("/api/integrations/{project_id}")
 async def get_project_integrations(
     project_id: str,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get all integrations for a project"""
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -1084,6 +1134,100 @@ async def get_project_integrations(
         for i in integrations
     ]
 
+@app.post("/api/integrations/{integration_id}/connect")
+async def connect_integration(
+    integration_id: str,
+    request: IntegrationConnectRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Connect an integration to a project"""
+    project = db.query(Project).filter(
+        Project.id == request.project_id,
+        Project.user_id == current_user.id
+    ).first()
+    
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Check if integration already exists for this project
+    existing = db.query(Integration).filter(
+        Integration.project_id == request.project_id,
+        Integration.provider == integration_id
+    ).first()
+    
+    if existing:
+        # Update existing integration
+        existing.api_key = request.config_data.get("api_key")
+        existing.settings = {**existing.settings, **request.config_data.get("settings", {})}
+        existing.is_active = request.config_data.get("is_active", True)
+        existing.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(existing)
+        return {
+            "success": True,
+            "message": "Integration updated successfully",
+            "integration_id": str(existing.id)
+        }
+    
+    # Get the system integration to copy settings
+    system_integration = db.query(Integration).filter(
+        Integration.provider == integration_id,
+        Integration.project_id == "system"
+    ).first()
+    
+    if not system_integration:
+        raise HTTPException(status_code=404, detail="Integration not found")
+    
+    # Create new integration for the user's project
+    integration = Integration(
+        id=str(uuid.uuid4()),
+        project_id=request.project_id,
+        type=system_integration.type,
+        provider=integration_id,
+        api_key=request.config_data.get("api_key"),
+        settings={
+            **system_integration.settings,
+            **request.config_data.get("settings", {})
+        },
+        is_active=request.config_data.get("is_active", True)
+    )
+    
+    db.add(integration)
+    db.commit()
+    db.refresh(integration)
+    
+    return {
+        "success": True,
+        "message": "Integration connected successfully",
+        "integration_id": str(integration.id)
+    }
+
+@app.delete("/api/integrations/{integration_id}")
+async def disconnect_integration(
+    integration_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Disconnect an integration"""
+    integration = db.query(Integration).join(
+        Project, Integration.project_id == Project.id
+    ).filter(
+        Integration.id == integration_id,
+        Project.user_id == current_user.id
+    ).first()
+    
+    if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found")
+    
+    db.delete(integration)
+    db.commit()
+    
+    return {
+        "success": True,
+        "message": "Integration disconnected successfully"
+    }
+
 @app.delete("/api/integrations/{project_id}/{integration_id}")
 async def delete_integration(
     project_id: str,
@@ -1091,7 +1235,6 @@ async def delete_integration(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Delete an integration"""
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -1112,18 +1255,30 @@ async def delete_integration(
     
     return {"message": "Integration removed successfully"}
 
+@app.post("/api/integrations/seed")
+async def seed_integrations_endpoint(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Seed integrations (admin only)"""
+    if current_user.email != "admin@aleyo.app":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    from seed_integrations import seed_integrations as seed
+    success = seed(db)
+    return {"success": success, "message": "Integrations seeded successfully"}
+
 # ==================== Design Endpoints ====================
 
 @app.get("/api/designs")
 async def get_designs(db: Session = Depends(get_db)):
-    """Get all available designs"""
-    designs = db.query(DesignTemplate).all()
+    designs = db.query(Design).all()
     result = []
     
     for design in designs:
-        components = db.query(DesignComponent).filter(
-            DesignComponent.design_id == design.id
-        ).order_by(DesignComponent.position).all()
+        components = db.query(Component).filter(
+            Component.design_id == design.id
+        ).order_by(Component.order).all()
         
         result.append({
             "id": design.id,
@@ -1133,8 +1288,8 @@ async def get_designs(db: Session = Depends(get_db)):
             "styles": design.styles,
             "components": [
                 {
-                    "id": comp.component_id,
-                    "type": comp.component_type,
+                    "id": comp.id,
+                    "type": comp.type,
                     "styles": comp.styles,
                     "content": comp.content
                 }
@@ -1144,27 +1299,84 @@ async def get_designs(db: Session = Depends(get_db)):
     
     return result
 
+@app.get("/api/designs/all")
+async def get_all_designs_for_frontend(db: Session = Depends(get_db)):
+    designs = db.query(Design).all()
+    
+    if not designs:
+        return []
+    
+    result = []
+    for design in designs:
+        components = db.query(Component).filter(
+            Component.design_id == design.id
+        ).order_by(Component.order).all()
+        
+        styles = design.styles or {}
+        
+        template = {
+            "id": str(design.id),
+            "name": design.name,
+            "category": design.category or "business",
+            "description": getattr(design, 'description', None) or f"{design.name} - Professional template",
+            "image": getattr(design, 'image_url', None) or f"https://placehold.co/600x400/{styles.get('primaryColor', '4F6EF7')[1:] if styles.get('primaryColor') else '4F6EF7'}/FFFFFF?text={design.name.replace(' ', '+')}",
+            "rating": getattr(design, 'rating', 4.5),
+            "reviews": getattr(design, 'reviews', 0),
+            "features": getattr(design, 'features', ["Responsive Design", "Modern Layout", "Easy Customization"]),
+            "popular": getattr(design, 'popular', False),
+            "icon": getattr(design, 'icon', "DesignServices"),
+            "color": styles.get("primaryColor", "#4F6EF7") if styles else "#4F6EF7",
+            "colors": {
+                "primaryColor": styles.get("primaryColor", "#4F6EF7") if styles else "#4F6EF7",
+                "secondaryColor": styles.get("secondaryColor", "#2DBCB6") if styles else "#2DBCB6",
+                "accentColor": styles.get("accentColor", "#3ED67C") if styles else "#3ED67C",
+                "backgroundColor": styles.get("backgroundColor", "#FAF9F7") if styles else "#FAF9F7",
+                "textColor": styles.get("textColor", "#2C2C2C") if styles else "#2C2C2C",
+                "headingColor": styles.get("headingColor", "#1A1A1A") if styles else "#1A1A1A",
+                "heroTitle": styles.get("heroTitle", design.name) if styles else design.name,
+                "heroSubtitle": styles.get("heroSubtitle", "Create something amazing") if styles else "Create something amazing",
+            },
+            "components": [
+                {
+                    "id": str(comp.id),
+                    "type": comp.type,
+                    "styles": comp.styles,
+                    "content": comp.content
+                }
+                for comp in components
+            ]
+        }
+        result.append(template)
+    
+    return result
+
 @app.get("/api/designs/{design_id}")
 async def get_design(design_id: str, db: Session = Depends(get_db)):
-    """Get specific design"""
-    design = db.query(DesignTemplate).filter(DesignTemplate.id == design_id).first()
+    design = db.query(Design).filter(Design.id == design_id).first()
     if not design:
         raise HTTPException(status_code=404, detail="Design not found")
     
-    components = db.query(DesignComponent).filter(
-        DesignComponent.design_id == design.id
-    ).order_by(DesignComponent.position).all()
+    components = db.query(Component).filter(
+        Component.design_id == design.id
+    ).order_by(Component.order).all()
     
     return {
         "id": design.id,
         "name": design.name,
         "category": design.category,
+        "description": getattr(design, 'description', None),
+        "image_url": getattr(design, 'image_url', None),
+        "rating": getattr(design, 'rating', None),
+        "reviews": getattr(design, 'reviews', None),
+        "features": getattr(design, 'features', None),
+        "popular": getattr(design, 'popular', None),
+        "icon": getattr(design, 'icon', None),
         "layout": design.layout,
         "styles": design.styles,
         "components": [
             {
-                "id": comp.component_id,
-                "type": comp.component_type,
+                "id": comp.id,
+                "type": comp.type,
                 "styles": comp.styles,
                 "content": comp.content
             }
@@ -1172,9 +1384,153 @@ async def get_design(design_id: str, db: Session = Depends(get_db)):
         ]
     }
 
+@app.post("/api/designs")
+async def create_design(
+    design_data: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    design = Design(
+        id=str(uuid.uuid4()),
+        name=design_data.get("name"),
+        category=design_data.get("category", "business"),
+        description=design_data.get("description"),
+        image_url=design_data.get("image_url"),
+        rating=design_data.get("rating", 4.5),
+        reviews=design_data.get("reviews", 0),
+        features=design_data.get("features", ["Responsive", "Modern"]),
+        popular=design_data.get("popular", False),
+        icon=design_data.get("icon", "DesignServices"),
+        styles=design_data.get("styles", {}),
+        layout=design_data.get("layout", {}),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc)
+    )
+    
+    db.add(design)
+    db.commit()
+    db.refresh(design)
+    
+    return {"message": "Design created successfully", "id": design.id}
+
+@app.put("/api/designs/{design_id}")
+async def update_design(
+    design_id: str,
+    design_data: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    design = db.query(Design).filter(Design.id == design_id).first()
+    if not design:
+        raise HTTPException(status_code=404, detail="Design not found")
+    
+    for key, value in design_data.items():
+        if hasattr(design, key) and key not in ["id", "created_at", "updated_at"]:
+            setattr(design, key, value)
+    
+    design.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(design)
+    
+    return {"message": "Design updated successfully"}
+
+@app.delete("/api/designs/{design_id}")
+async def delete_design(
+    design_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    design = db.query(Design).filter(Design.id == design_id).first()
+    if not design:
+        raise HTTPException(status_code=404, detail="Design not found")
+    
+    db.delete(design)
+    db.commit()
+    
+    return {"message": "Design deleted successfully"}
+
+@app.post("/api/designs/{design_id}/components")
+async def add_component_to_design(
+    design_id: str,
+    component_data: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    design = db.query(Design).filter(Design.id == design_id).first()
+    if not design:
+        raise HTTPException(status_code=404, detail="Design not found")
+    
+    max_order = db.query(func.max(Component.order)).filter(
+        Component.design_id == design_id
+    ).scalar() or 0
+    
+    component = Component(
+        id=str(uuid.uuid4()),
+        design_id=design_id,
+        type=component_data.get("type", "section"),
+        styles=component_data.get("styles", {}),
+        content=component_data.get("content", {}),
+        order=max_order + 1
+    )
+    
+    db.add(component)
+    db.commit()
+    db.refresh(component)
+    
+    return {"message": "Component added successfully", "id": component.id}
+
+@app.put("/api/designs/{design_id}/components/{component_id}")
+async def update_component(
+    design_id: str,
+    component_id: str,
+    component_data: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    component = db.query(Component).filter(
+        Component.id == component_id,
+        Component.design_id == design_id
+    ).first()
+    
+    if not component:
+        raise HTTPException(status_code=404, detail="Component not found")
+    
+    if "type" in component_data:
+        component.type = component_data["type"]
+    if "styles" in component_data:
+        component.styles = component_data["styles"]
+    if "content" in component_data:
+        component.content = component_data["content"]
+    if "order" in component_data:
+        component.order = component_data["order"]
+    
+    db.commit()
+    db.refresh(component)
+    
+    return {"message": "Component updated successfully"}
+
+@app.delete("/api/designs/{design_id}/components/{component_id}")
+async def delete_component(
+    design_id: str,
+    component_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    component = db.query(Component).filter(
+        Component.id == component_id,
+        Component.design_id == design_id
+    ).first()
+    
+    if not component:
+        raise HTTPException(status_code=404, detail="Component not found")
+    
+    db.delete(component)
+    db.commit()
+    
+    return {"message": "Component deleted successfully"}
+
 @app.post("/api/preview")
 async def preview_website(design_ids: List[str], db: Session = Depends(get_db)):
-    """Generate preview of merged designs"""
     merged = {
         "layout": {},
         "styles": {},
@@ -1182,7 +1538,7 @@ async def preview_website(design_ids: List[str], db: Session = Depends(get_db)):
     }
     
     for design_id in design_ids:
-        design = db.query(DesignTemplate).filter(DesignTemplate.id == design_id).first()
+        design = db.query(Design).filter(Design.id == design_id).first()
         if design:
             if design.layout:
                 merged["layout"].update(design.layout)
@@ -1191,19 +1547,18 @@ async def preview_website(design_ids: List[str], db: Session = Depends(get_db)):
                 for key, value in design.styles.items():
                     merged["styles"][key] = value
             
-            components = db.query(DesignComponent).filter(
-                DesignComponent.design_id == design.id
-            ).order_by(DesignComponent.position).all()
+            components = db.query(Component).filter(
+                Component.design_id == design.id
+            ).order_by(Component.order).all()
             
             for comp in components:
                 merged["components"].append({
-                    "id": comp.component_id,
-                    "type": comp.component_type,
+                    "id": comp.id,
+                    "type": comp.type,
                     "styles": comp.styles,
                     "content": comp.content
                 })
     
-    # Remove duplicate components by id
     seen = set()
     unique_components = []
     for comp in merged["components"]:
@@ -1225,7 +1580,8 @@ class ConnectionManager:
         self.active_connections.append(websocket)
     
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
     
     async def send_message(self, message: str, websocket: WebSocket):
         await websocket.send_text(message)
@@ -1247,14 +1603,13 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                 response = await process_selection(message["selection"], user_id)
                 await manager.send_message(json.dumps(response), websocket)
             elif message["type"] == "merge_designs":
-                response = await merge_designs(message["design_ids"], user_id)
+                response = await merge_designs_ws(message["design_ids"], user_id)
                 await manager.send_message(json.dumps(response), websocket)
                 
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
 async def process_voice_command(command: str, user_id: str):
-    """Process voice commands using AI"""
     commands = command.lower()
     
     if "change color" in commands or "blue" in commands:
@@ -1279,12 +1634,10 @@ async def process_voice_command(command: str, user_id: str):
         }
 
 async def process_selection(selection: Dict, user_id: str):
-    """Process click selections from UI"""
     selection_type = selection.get("type")
     
     if selection_type == "design_template":
         template_id = selection.get("template_id")
-        # In a real implementation, fetch from DB
         return {"action": "apply_template", "template": {"id": template_id}}
     
     elif selection_type == "style_option":
@@ -1298,8 +1651,7 @@ async def process_selection(selection: Dict, user_id: str):
     
     return {"error": "Invalid selection"}
 
-async def merge_designs(design_ids: List[str], user_id: str):
-    """Merge multiple designs together"""
+async def merge_designs_ws(design_ids: List[str], user_id: str):
     return {"action": "merge_complete", "merged_design": {"design_ids": design_ids}}
 
 # ==================== Analytics Endpoints ====================
@@ -1309,11 +1661,8 @@ async def get_usage_analytics(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get user usage analytics"""
-    # Get user's projects
     user_projects = db.query(Project).filter(Project.user_id == current_user.id).all()
     
-    # Get credit transactions
     transactions = db.query(CreditTransaction).filter(
         CreditTransaction.user_id == current_user.id
     ).all()
@@ -1347,22 +1696,31 @@ async def get_usage_analytics(
 
 @app.get("/api/health")
 async def health_check(db: Session = Depends(get_db)):
-    """Health check endpoint"""
-    user_count = db.query(User).count()
-    project_count = db.query(Project).count()
-    design_count = db.query(DesignTemplate).count()
-    
-    return {
-        "status": "healthy",
-        "timestamp": datetime.utcnow(),
-        "users": user_count,
-        "projects": project_count,
-        "designs": design_count
-    }
+    try:
+        user_count = db.query(User).count()
+        project_count = db.query(Project).count()
+        design_count = db.query(Design).count()
+        
+        return {
+            "status": "healthy",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "users": user_count,
+            "projects": project_count,
+            "designs": design_count
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        return {
+            "status": "unhealthy",
+            "error": str(e),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
 
+# ==================== Main Entry Point ====================
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000)
+
 # Vercel / ASGI handler alias
 handler = app
