@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Box,
   Container,
@@ -65,7 +65,7 @@ import {
   Close,
   ColorLens,
   Typography as TypographyIcon,
-  Layout,
+  ViewQuilt,
   Add,
   Delete,
   DragIndicator,
@@ -99,8 +99,6 @@ import {
   FormatUnderlined,
   FormatColorFill,
   FontDownload,
-  TextIncrease,
-  TextDecrease,
   DragHandle,
   Square,
   Crop,
@@ -121,7 +119,6 @@ import {
   Contrast,
   Grain,
   Image as ImageIcon,
-  CheckCircleRounded,
   Search,
   Payment,
   Mail,
@@ -142,23 +139,200 @@ import {
   Description as DescriptionIcon,
   Email as EmailIcon,
   Block,
+  FolderOpen,
+  Refresh,
+  YouTube,
+  LinkedIn,
 } from '@mui/icons-material';
-import { ImageOutlined } from '@mui/icons-material';
 import { motion, AnimatePresence } from 'framer-motion';
 import { DragDropContext, Droppable, Draggable } from 'react-beautiful-dnd';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ChromePicker } from 'react-color';
 import axios from 'axios';
+import { useAuth } from '../context/AuthContext';
 
-// Import auth context - adjust path as needed
-// import { useAuth } from '../contexts/AuthContext';
-
+// ── CONSTANTS ──────────────────────────────────────────────────────────
 const G_START = '#4F6EF7';
 const G_MID = '#2DBCB6';
 const G_END = '#3ED67C';
 const GRAD = `linear-gradient(135deg, ${G_START} 0%, ${G_MID} 50%, ${G_END} 100%)`;
+const API_BASE = process.env.REACT_APP_API_URL || 'http://127.0.0.1:8000';
 
-// Predefined text styles for drag and drop
+const ContentCopy = Code;
+const EditIcon = Brush;
+const OpenWith = DragHandle;
+
+// ── LOAD DESIGN FROM DESIGNS.JS ──────────────────────────────────────
+let design = [];
+try {
+  const designsModule = require('./Designs');
+  const raw = designsModule.design || designsModule.default || [];
+  if (Array.isArray(raw)) {
+    design = raw;
+  } else if (raw && typeof raw === 'object') {
+    // Handle cases where Designs.js exports an object/map instead of an array
+    // e.g. { templates: [...] } or { someKey: {...}, otherKey: {...} }
+    design = Array.isArray(raw.templates) ? raw.templates : Object.values(raw);
+  } else {
+    design = [];
+  }
+} catch (e) {
+  console.warn('Failed to load Designs:', e);
+  design = [];
+}
+
+// ── FALLBACK PROJECTS GALLERY ────────────────────────────────────────
+const ProjectsGallery = ({
+  onOpenProject,
+  onPreviewProject,
+  onPublishProject,
+  onDeleteProject,
+  onDuplicateProject,
+  showHeader = true,
+}) => {
+  const [projects, setProjects] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const loadProjects = () => {
+      const projectList = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('project_')) {
+          try {
+            const data = JSON.parse(localStorage.getItem(key) || '');
+            if (data && data.id && data.name) {
+              projectList.push(data);
+            }
+          } catch (e) {
+            console.error('Error parsing project:', e);
+          }
+        }
+      }
+      projectList.sort((a, b) => new Date(b.lastEdited) - new Date(a.lastEdited));
+      setProjects(projectList);
+      setLoading(false);
+    };
+    loadProjects();
+  }, []);
+
+  if (loading) {
+    return (
+      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', py: 8 }}>
+        <CircularProgress sx={{ color: G_START }} />
+      </Box>
+    );
+  }
+
+  if (projects.length === 0) {
+    return (
+      <Box sx={{ textAlign: 'center', py: 6 }}>
+        <Typography variant="h6" sx={{ color: 'white' }}>
+          No Projects Found
+        </Typography>
+        <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.5)' }}>
+          Create your first project in the Design Studio
+        </Typography>
+      </Box>
+    );
+  }
+
+  return (
+    <Grid container spacing={2} sx={{ p: 2 }}>
+      {projects.map((project) => (
+        <Grid item xs={12} sm={6} md={4} key={project.id}>
+          <Card
+            sx={{
+              bgcolor: alpha('#FFFFFF', 0.05),
+              borderRadius: 2,
+              cursor: 'pointer',
+              transition: 'all 0.2s',
+              '&:hover': {
+                bgcolor: alpha('#4F6EF7', 0.1),
+                transform: 'translateY(-4px)',
+              },
+            }}
+          >
+            <CardContent>
+              <Typography variant="h6" sx={{ color: 'white' }}>
+                {project.name}
+              </Typography>
+              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)' }}>
+                {project.components?.length || 0} components • {project.textElements?.length || 0}{' '}
+                text elements
+              </Typography>
+              <Box sx={{ mt: 1 }}>
+                <Chip
+                  size="small"
+                  label={project.status || 'draft'}
+                  sx={{
+                    bgcolor:
+                      project.status === 'published'
+                        ? alpha('#4CAF50', 0.2)
+                        : alpha('#FFA726', 0.2),
+                    color: project.status === 'published' ? '#4CAF50' : '#FFA726',
+                  }}
+                />
+              </Box>
+            </CardContent>
+            <CardActions>
+              <Button
+                size="small"
+                variant="contained"
+                onClick={() => onOpenProject && onOpenProject(project)}
+                sx={{
+                  background: GRAD,
+                  '&:hover': { opacity: 0.9 },
+                }}
+              >
+                Open
+              </Button>
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={() => onPreviewProject && onPreviewProject(project)}
+                sx={{ color: 'white', borderColor: 'rgba(255,255,255,0.2)' }}
+              >
+                Preview
+              </Button>
+              {onPublishProject && (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={() => onPublishProject(project)}
+                  sx={{ color: G_END, borderColor: G_END }}
+                >
+                  Publish
+                </Button>
+              )}
+            </CardActions>
+          </Card>
+        </Grid>
+      ))}
+    </Grid>
+  );
+};
+
+// ── HELPER FUNCTIONS ─────────────────────────────────────────────────
+const getInitialProject = () => {
+  const savedProjectId = localStorage.getItem('latest_project_id');
+  if (savedProjectId) {
+    const savedData = localStorage.getItem(`project_${savedProjectId}`);
+    if (savedData) {
+      try {
+        return JSON.parse(savedData);
+      } catch (e) {
+        console.error('Error parsing saved project:', e);
+      }
+    }
+  }
+  if (design && design.length > 0) {
+    return design[0];
+  }
+  return null;
+};
+
+// ── PREDEFINED STYLES ─────────────────────────────────────────────────
 const textStyles = [
   {
     id: 'h1',
@@ -212,8 +386,7 @@ const textStyles = [
     id: 'p',
     name: 'Paragraph',
     tag: 'p',
-    defaultText:
-      'Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.',
+    defaultText: 'Lorem ipsum dolor sit amet, consectetur adipiscing elit.',
     fontSize: '16px',
     fontWeight: 'normal',
   },
@@ -242,9 +415,17 @@ const textStyles = [
     fontWeight: 'normal',
     href: '#',
   },
+  {
+    id: 'nav',
+    name: 'Navigation Menu',
+    tag: 'nav',
+    defaultText: 'Home | About | Services | Contact',
+    fontSize: '16px',
+    fontWeight: '500',
+    isNav: true,
+  },
 ];
 
-// Predefined image styles/sizes
 const imageStyles = [
   {
     id: 'full-width',
@@ -312,7 +493,7 @@ const imageStyles = [
   },
 ];
 
-// Color Themes for the entire design studio
+// ── COLOR THEMES ──────────────────────────────────────────────────────
 const colorThemes = [
   {
     id: 'dark-magic',
@@ -326,8 +507,6 @@ const colorThemes = [
       textColor: '#E0E0E0',
       headingColor: '#FFFFFF',
       buttonStyle: 'rounded',
-      cardBg: 'rgba(157, 78, 221, 0.1)',
-      borderGlow: 'rgba(157, 78, 221, 0.3)',
     },
   },
   {
@@ -342,8 +521,6 @@ const colorThemes = [
       textColor: '#E0F2FE',
       headingColor: '#F0F9FF',
       buttonStyle: 'rounded',
-      cardBg: 'rgba(44, 125, 160, 0.1)',
-      borderGlow: 'rgba(44, 125, 160, 0.3)',
     },
   },
   {
@@ -358,8 +535,6 @@ const colorThemes = [
       textColor: '#D8F3DC',
       headingColor: '#F0FFF4',
       buttonStyle: 'rounded',
-      cardBg: 'rgba(45, 106, 79, 0.1)',
-      borderGlow: 'rgba(45, 106, 79, 0.3)',
     },
   },
   {
@@ -374,8 +549,6 @@ const colorThemes = [
       textColor: '#FFF3E0',
       headingColor: '#FFFFFF',
       buttonStyle: 'rounded',
-      cardBg: 'rgba(232, 93, 4, 0.1)',
-      borderGlow: 'rgba(232, 93, 4, 0.3)',
     },
   },
   {
@@ -390,8 +563,6 @@ const colorThemes = [
       textColor: '#FCE4EC',
       headingColor: '#FFFFFF',
       buttonStyle: 'rounded',
-      cardBg: 'rgba(216, 27, 96, 0.1)',
-      borderGlow: 'rgba(216, 27, 96, 0.3)',
     },
   },
   {
@@ -406,8 +577,6 @@ const colorThemes = [
       textColor: '#CAF0F8',
       headingColor: '#FFFFFF',
       buttonStyle: 'rounded',
-      cardBg: 'rgba(0, 180, 216, 0.1)',
-      borderGlow: 'rgba(0, 180, 216, 0.3)',
     },
   },
   {
@@ -422,8 +591,6 @@ const colorThemes = [
       textColor: '#FFF8E1',
       headingColor: '#FFFFFF',
       buttonStyle: 'rounded',
-      cardBg: 'rgba(255, 215, 0, 0.1)',
-      borderGlow: 'rgba(255, 215, 0, 0.3)',
     },
   },
   {
@@ -438,8 +605,6 @@ const colorThemes = [
       textColor: '#F3E8FF',
       headingColor: '#FFFFFF',
       buttonStyle: 'rounded',
-      cardBg: 'rgba(185, 128, 234, 0.1)',
-      borderGlow: 'rgba(185, 128, 234, 0.3)',
     },
   },
   {
@@ -454,8 +619,6 @@ const colorThemes = [
       textColor: '#FFEBEE',
       headingColor: '#FFFFFF',
       buttonStyle: 'rounded',
-      cardBg: 'rgba(220, 20, 60, 0.1)',
-      borderGlow: 'rgba(220, 20, 60, 0.3)',
     },
   },
   {
@@ -470,8 +633,6 @@ const colorThemes = [
       textColor: '#E0E0E0',
       headingColor: '#FFFFFF',
       buttonStyle: 'rounded',
-      cardBg: 'rgba(0, 255, 157, 0.05)',
-      borderGlow: 'rgba(0, 255, 157, 0.3)',
     },
   },
   {
@@ -486,8 +647,6 @@ const colorThemes = [
       textColor: '#F5E6D3',
       headingColor: '#FFF8F0',
       buttonStyle: 'rounded',
-      cardBg: 'rgba(166, 124, 82, 0.1)',
-      borderGlow: 'rgba(166, 124, 82, 0.3)',
     },
   },
   {
@@ -502,189 +661,10 @@ const colorThemes = [
       textColor: '#FFF0F5',
       headingColor: '#FFFFFF',
       buttonStyle: 'rounded',
-      cardBg: 'rgba(255, 183, 197, 0.1)',
-      borderGlow: 'rgba(255, 183, 197, 0.3)',
-    },
-  },
-  {
-    id: 'midnight-sapphire',
-    name: 'Midnight Sapphire',
-    description: 'Deep blue gemstone theme',
-    styles: {
-      backgroundColor: '#0A0F1A',
-      primaryColor: '#1565C0',
-      secondaryColor: '#1E88E5',
-      accentColor: '#42A5F5',
-      textColor: '#E3F2FD',
-      headingColor: '#FFFFFF',
-      buttonStyle: 'rounded',
-      cardBg: 'rgba(21, 101, 192, 0.1)',
-      borderGlow: 'rgba(21, 101, 192, 0.3)',
-    },
-  },
-  {
-    id: 'emerald-city',
-    name: 'Emerald City',
-    description: 'Rich emerald green theme',
-    styles: {
-      backgroundColor: '#0A1A0F',
-      primaryColor: '#00A86B',
-      secondaryColor: '#00C853',
-      accentColor: '#69F0AE',
-      textColor: '#E8F5E9',
-      headingColor: '#FFFFFF',
-      buttonStyle: 'rounded',
-      cardBg: 'rgba(0, 168, 107, 0.1)',
-      borderGlow: 'rgba(0, 168, 107, 0.3)',
-    },
-  },
-  {
-    id: 'twilight-purple',
-    name: 'Twilight Purple',
-    description: 'Mysterious twilight purple theme',
-    styles: {
-      backgroundColor: '#0E0A1A',
-      primaryColor: '#6A1B9A',
-      secondaryColor: '#8E24AA',
-      accentColor: '#AB47BC',
-      textColor: '#F3E5F5',
-      headingColor: '#FFFFFF',
-      buttonStyle: 'rounded',
-      cardBg: 'rgba(106, 27, 154, 0.1)',
-      borderGlow: 'rgba(106, 27, 154, 0.3)',
-    },
-  },
-  {
-    id: 'candy-cane',
-    name: 'Candy Cane',
-    description: 'Festive red and white theme',
-    styles: {
-      backgroundColor: '#1A0A0A',
-      primaryColor: '#FF3B30',
-      secondaryColor: '#FF5E3A',
-      accentColor: '#FF7F50',
-      textColor: '#FFFFFF',
-      headingColor: '#FFFFFF',
-      buttonStyle: 'rounded',
-      cardBg: 'rgba(255, 59, 48, 0.1)',
-      borderGlow: 'rgba(255, 59, 48, 0.3)',
-    },
-  },
-  {
-    id: 'electric-blue',
-    name: 'Electric Blue',
-    description: 'Vibrant electric blue theme',
-    styles: {
-      backgroundColor: '#0A0A1A',
-      primaryColor: '#0055FF',
-      secondaryColor: '#0088FF',
-      accentColor: '#00AAFF',
-      textColor: '#E0E0FF',
-      headingColor: '#FFFFFF',
-      buttonStyle: 'rounded',
-      cardBg: 'rgba(0, 85, 255, 0.1)',
-      borderGlow: 'rgba(0, 85, 255, 0.3)',
-    },
-  },
-  {
-    id: 'mint-fresh',
-    name: 'Mint Fresh',
-    description: 'Cool refreshing mint theme',
-    styles: {
-      backgroundColor: '#0A1A14',
-      primaryColor: '#1DB954',
-      secondaryColor: '#2EBD6B',
-      accentColor: '#4CDA8C',
-      textColor: '#E8F5E9',
-      headingColor: '#FFFFFF',
-      buttonStyle: 'rounded',
-      cardBg: 'rgba(29, 185, 84, 0.1)',
-      borderGlow: 'rgba(29, 185, 84, 0.3)',
-    },
-  },
-  {
-    id: 'platinum',
-    name: 'Platinum',
-    description: 'Clean modern platinum theme',
-    styles: {
-      backgroundColor: '#1A1A1A',
-      primaryColor: '#B0BEC5',
-      secondaryColor: '#CFD8DC',
-      accentColor: '#ECEFF1',
-      textColor: '#F5F5F5',
-      headingColor: '#FFFFFF',
-      buttonStyle: 'rounded',
-      cardBg: 'rgba(176, 190, 197, 0.1)',
-      borderGlow: 'rgba(176, 190, 197, 0.3)',
-    },
-  },
-  {
-    id: 'sunflower',
-    name: 'Sunflower',
-    description: 'Bright cheerful yellow theme',
-    styles: {
-      backgroundColor: '#1A1A0A',
-      primaryColor: '#FFD700',
-      secondaryColor: '#FFED4A',
-      accentColor: '#FFF59D',
-      textColor: '#FFF8E1',
-      headingColor: '#FFFFFF',
-      buttonStyle: 'rounded',
-      cardBg: 'rgba(255, 215, 0, 0.1)',
-      borderGlow: 'rgba(255, 215, 0, 0.3)',
-    },
-  },
-  {
-    id: 'berry-blast',
-    name: 'Berry Blast',
-    description: 'Bold berry colors theme',
-    styles: {
-      backgroundColor: '#1A0A1A',
-      primaryColor: '#C2185B',
-      secondaryColor: '#D81B60',
-      accentColor: '#E91E63',
-      textColor: '#FCE4EC',
-      headingColor: '#FFFFFF',
-      buttonStyle: 'rounded',
-      cardBg: 'rgba(194, 24, 91, 0.1)',
-      borderGlow: 'rgba(194, 24, 91, 0.3)',
     },
   },
 ];
 
-// Function to apply a theme
-const applyColorTheme = (theme, setGlobalStyles, showSnackbar) => {
-  setGlobalStyles((prev) => ({
-    ...prev,
-    primaryColor: theme.styles.primaryColor,
-    secondaryColor: theme.styles.secondaryColor,
-    accentColor: theme.styles.accentColor,
-    backgroundColor: theme.styles.backgroundColor,
-    textColor: theme.styles.textColor,
-    headingColor: theme.styles.headingColor,
-    buttonStyle: theme.styles.buttonStyle,
-  }));
-
-  // Save to localStorage
-  localStorage.setItem(
-    'selectedDesignColors',
-    JSON.stringify({
-      primaryColor: theme.styles.primaryColor,
-      secondaryColor: theme.styles.secondaryColor,
-      accentColor: theme.styles.accentColor,
-      backgroundColor: theme.styles.backgroundColor,
-      textColor: theme.styles.textColor,
-      headingColor: theme.styles.headingColor,
-    })
-  );
-
-  // Also save the current theme ID
-  localStorage.setItem('currentColorTheme', theme.id);
-
-  showSnackbar(`${theme.name} theme applied!`, 'success');
-};
-
-// Additional color palettes
 const colorPalettes = [
   { name: 'Ocean Breeze', colors: ['#0066CC', '#0099FF', '#33CCFF', '#66FFFF', '#CCFFFF'] },
   { name: 'Sunset Glow', colors: ['#FF6B6B', '#FF8E53', '#FFB347', '#FFD966', '#FFF5CC'] },
@@ -696,181 +676,8 @@ const colorPalettes = [
   { name: 'Monochrome', colors: ['#000000', '#333333', '#666666', '#999999', '#CCCCCC'] },
 ];
 
-// ---- Integration Panel Data (merged from IntegrationManager.js and Integrations.js) ----
-const integrationTypes = [
-  {
-    type: 'forms',
-    label: 'Form Builder',
-    icon: DescriptionIcon,
-    providers: ['formspree', 'typeform', 'google_forms'],
-    description: 'Collect user submissions and leads',
-  },
-  {
-    type: 'payment',
-    label: 'Payment Gateway',
-    icon: Payment,
-    providers: ['stripe', 'paypal', 'square'],
-    description: 'Accept payments and manage subscriptions',
-  },
-  {
-    type: 'email',
-    label: 'Email Marketing',
-    icon: EmailIcon,
-    providers: ['mailchimp', 'sendgrid', 'convertkit'],
-    description: 'Email marketing and newsletters',
-  },
-  {
-    type: 'calendar',
-    label: 'Calendar/Scheduling',
-    icon: CalendarToday,
-    providers: ['calendly', 'acuity', 'bookings'],
-    description: 'Schedule appointments and meetings',
-  },
-  {
-    type: 'ads',
-    label: 'Ad Platforms',
-    icon: Campaign,
-    providers: ['google_ads', 'meta_ads', 'linkedin_ads'],
-    description: 'Track conversions and retargeting',
-  },
-];
-
-const prebuiltIntegrationsList = [
-  {
-    id: 1,
-    name: 'Stripe',
-    category: 'payments',
-    description: 'Accept payments and manage subscriptions',
-    icon: <Payment />,
-    color: '#635bff',
-    connected: false,
-    popular: true,
-  },
-  {
-    id: 2,
-    name: 'Mailchimp',
-    category: 'marketing',
-    description: 'Email marketing and newsletters',
-    icon: <Mail />,
-    color: '#ffc107',
-    connected: false,
-    popular: true,
-  },
-  {
-    id: 3,
-    name: 'WhatsApp Business',
-    category: 'social',
-    description: 'Customer support and messaging',
-    icon: <WhatsApp />,
-    color: '#25D366',
-    connected: false,
-    popular: true,
-  },
-  {
-    id: 4,
-    name: 'Instagram',
-    category: 'social',
-    description: 'Social media integration and feeds',
-    icon: <Instagram />,
-    color: '#E4405F',
-    connected: true,
-    popular: true,
-  },
-  {
-    id: 5,
-    name: 'Facebook Pixel',
-    category: 'analytics',
-    description: 'Track conversions and retargeting',
-    icon: <Facebook />,
-    color: '#1877F2',
-    connected: false,
-    popular: true,
-  },
-  {
-    id: 6,
-    name: 'Google Analytics',
-    category: 'analytics',
-    description: 'Website traffic and user behavior',
-    icon: <Analytics />,
-    color: '#34A853',
-    connected: true,
-    popular: true,
-  },
-  {
-    id: 7,
-    name: 'AWS S3',
-    category: 'storage',
-    description: 'Cloud storage for media files',
-    icon: <Storage />,
-    color: '#FF9900',
-    connected: false,
-    popular: false,
-  },
-  {
-    id: 8,
-    name: 'Cloudflare',
-    category: 'security',
-    description: 'CDN and security protection',
-    icon: <Security />,
-    color: '#F38020',
-    connected: false,
-    popular: false,
-  },
-  {
-    id: 9,
-    name: 'OpenAI API',
-    category: 'ai',
-    description: 'AI-powered content generation',
-    icon: <Api />,
-    color: '#10a37f',
-    connected: false,
-    popular: true,
-  },
-  {
-    id: 10,
-    name: 'Spotify',
-    category: 'music',
-    description: 'Music embed and playlists',
-    icon: <MusicNote />,
-    color: '#1DB954',
-    connected: false,
-    popular: false,
-  },
-  {
-    id: 11,
-    name: 'Discord',
-    category: 'social',
-    description: 'Community integration and webhooks',
-    icon: <Chat />,
-    color: '#5865F2',
-    connected: false,
-    popular: true,
-  },
-  {
-    id: 12,
-    name: 'Google Drive',
-    category: 'storage',
-    description: 'Cloud storage integration',
-    icon: <CloudUpload />,
-    color: '#4285F4',
-    connected: false,
-    popular: false,
-  },
-];
-
-const integrationCategories = [
-  { value: 'all', label: 'All' },
-  { value: 'payments', label: 'Payments' },
-  { value: 'marketing', label: 'Marketing' },
-  { value: 'social', label: 'Social' },
-  { value: 'analytics', label: 'Analytics' },
-  { value: 'storage', label: 'Storage' },
-  { value: 'security', label: 'Security' },
-  { value: 'ai', label: 'AI' },
-];
-
-// ---- Integration Panel Component (merged) ----
-const IntegrationsPanel = ({ showSnackbar, projectId }) => {
+// ── INTEGRATIONS PANEL ─────────────────────────────────────────────────
+const IntegrationsPanel = ({ showSnackbar, projectId, onAddIntegration, onRemoveIntegration }) => {
   const [integrations, setIntegrations] = useState([]);
   const [selectedIntegration, setSelectedIntegration] = useState(null);
   const [configDialog, setConfigDialog] = useState(false);
@@ -878,25 +685,329 @@ const IntegrationsPanel = ({ showSnackbar, projectId }) => {
     type: '',
     provider: '',
     api_key: '',
+    api_secret: '',
     settings: {},
+    webhook_url: '',
   });
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
-  const [prebuiltIntegrations, setPrebuiltIntegrations] = useState(prebuiltIntegrationsList);
+  const [prebuiltIntegrations, setPrebuiltIntegrations] = useState([
+    {
+      id: 1,
+      name: 'Stripe',
+      category: 'payments',
+      description: 'Accept payments and manage subscriptions',
+      icon: <Payment />,
+      color: '#635bff',
+      connected: false,
+      popular: true,
+    },
+    {
+      id: 2,
+      name: 'Mailchimp',
+      category: 'marketing',
+      description: 'Email marketing and newsletters',
+      icon: <Mail />,
+      color: '#ffc107',
+      connected: false,
+      popular: true,
+    },
+    {
+      id: 3,
+      name: 'WhatsApp Business',
+      category: 'social',
+      description: 'Customer support and messaging',
+      icon: <WhatsApp />,
+      color: '#25D366',
+      connected: false,
+      popular: true,
+    },
+    {
+      id: 4,
+      name: 'Instagram',
+      category: 'social',
+      description: 'Social media integration and feeds',
+      icon: <Instagram />,
+      color: '#E4405F',
+      connected: true,
+      popular: true,
+    },
+    {
+      id: 5,
+      name: 'Facebook Pixel',
+      category: 'analytics',
+      description: 'Track conversions and retargeting',
+      icon: <Facebook />,
+      color: '#1877F2',
+      connected: false,
+      popular: true,
+    },
+    {
+      id: 6,
+      name: 'Google Analytics',
+      category: 'analytics',
+      description: 'Website traffic and user behavior',
+      icon: <Analytics />,
+      color: '#34A853',
+      connected: true,
+      popular: true,
+    },
+    {
+      id: 7,
+      name: 'AWS S3',
+      category: 'storage',
+      description: 'Cloud storage for media files',
+      icon: <Storage />,
+      color: '#FF9900',
+      connected: false,
+      popular: false,
+    },
+    {
+      id: 8,
+      name: 'Cloudflare',
+      category: 'security',
+      description: 'CDN and security protection',
+      icon: <Security />,
+      color: '#F38020',
+      connected: false,
+      popular: false,
+    },
+    {
+      id: 9,
+      name: 'OpenAI API',
+      category: 'ai',
+      description: 'AI-powered content generation',
+      icon: <Api />,
+      color: '#10a37f',
+      connected: false,
+      popular: true,
+    },
+    {
+      id: 10,
+      name: 'Spotify',
+      category: 'music',
+      description: 'Music embed and playlists',
+      icon: <MusicNote />,
+      color: '#1DB954',
+      connected: false,
+      popular: false,
+    },
+    {
+      id: 11,
+      name: 'Discord',
+      category: 'social',
+      description: 'Community integration and webhooks',
+      icon: <Chat />,
+      color: '#5865F2',
+      connected: false,
+      popular: true,
+    },
+    {
+      id: 12,
+      name: 'Google Drive',
+      category: 'storage',
+      description: 'Cloud storage integration',
+      icon: <CloudUpload />,
+      color: '#4285F4',
+      connected: false,
+      popular: false,
+    },
+  ]);
+  const [activeIntegrationFeatures, setActiveIntegrationFeatures] = useState([]);
+  const [connectedIntegrations, setConnectedIntegrations] = useState([]);
+  const [dragOverIntegration, setDragOverIntegration] = useState(null);
+  const [showCodeDialog, setShowCodeDialog] = useState(false);
+  const [selectedIntegrationCode, setSelectedIntegrationCode] = useState('');
+  const [integrationStatus, setIntegrationStatus] = useState({});
 
-  const handleConfigure = async () => {
-    setIntegrations([
-      ...integrations,
-      { ...configData, integration_code: '<!-- Integration code would appear here -->' },
-    ]);
-    setConfigDialog(false);
-    setConfigData({ type: '', provider: '', api_key: '', settings: {} });
-    if (showSnackbar) showSnackbar('Integration added successfully!', 'success');
+  const integrationFeatures = {
+    stripe: {
+      name: 'Stripe Payment',
+      icon: <Payment />,
+      code: `<div id="stripe-payment"><div id="payment-element"></div><button id="payment-button">Pay Now</button><script src="https://js.stripe.com/v3/"></script><script>const stripe = Stripe('YOUR_API_KEY');</script></div>`,
+      section: 'payment',
+    },
+    paypal: {
+      name: 'PayPal Checkout',
+      icon: <Payment />,
+      code: `<div id="paypal-button-container"></div><script src="https://www.paypal.com/sdk/js?client-id=YOUR_API_KEY"></script><script>paypal.Buttons({createOrder: (data, actions) => {return actions.order.create({purchase_units: [{ amount: { value: '10.00' } }]});},onApprove: (data, actions) => {return actions.order.capture();}}).render('#paypal-button-container');</script>`,
+      section: 'payment',
+    },
+    mailchimp: {
+      name: 'Mailchimp Newsletter',
+      icon: <Mail />,
+      code: `<div id="mc_embed_signup"><form action="https://YOUR_DC.list-manage.com/subscribe/post" method="POST"><input type="email" name="EMAIL" placeholder="Subscribe to newsletter" required><button type="submit">Subscribe</button></form></div>`,
+      section: 'marketing',
+    },
+    sendgrid: {
+      name: 'SendGrid Contact Form',
+      icon: <Mail />,
+      code: `<form id="contact-form" action="/api/sendgrid/contact" method="POST"><input type="text" name="name" placeholder="Your Name" required><input type="email" name="email" placeholder="Your Email" required><textarea name="message" placeholder="Your Message" required></textarea><button type="submit">Send Message</button></form>`,
+      section: 'marketing',
+    },
+    calendly: {
+      name: 'Calendly Scheduling',
+      icon: <CalendarToday />,
+      code: `<link href="https://assets.calendly.com/assets/external/widget.css" rel="stylesheet"><script src="https://assets.calendly.com/assets/external/widget.js" type="text/javascript" async></script><div class="calendly-inline-widget" data-url="https://calendly.com/YOUR_USERNAME" style="min-width:320px;height:630px;"></div>`,
+      section: 'calendar',
+    },
+    acuity: {
+      name: 'Acuity Scheduling',
+      icon: <CalendarToday />,
+      code: `<div id="acuity-embed"><iframe src="https://acuityscheduling.com/schedule.php?owner=YOUR_OWNER_ID" width="100%" height="800" frameBorder="0"></iframe></div>`,
+      section: 'calendar',
+    },
+    google_analytics: {
+      name: 'Google Analytics',
+      icon: <Analytics />,
+      code: `<!-- Google Analytics --><script async src="https://www.googletagmanager.com/gtag/js?id=YOUR_GA_ID"></script><script>window.dataLayer = window.dataLayer || [];function gtag(){dataLayer.push(arguments);}gtag('js', new Date());gtag('config', 'YOUR_GA_ID');</script>`,
+      section: 'analytics',
+    },
+    meta_pixel: {
+      name: 'Meta Pixel',
+      icon: <Facebook />,
+      code: `<!-- Meta Pixel Code --><script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window, document,'script','https://connect.facebook.net/en_US/fbevents.js');fbq('init', 'YOUR_PIXEL_ID');fbq('track', 'PageView');</script><noscript><img height="1" width="1" style="display:none" src="https://www.facebook.com/tr?id=YOUR_PIXEL_ID&ev=PageView&noscript=1" /></noscript>`,
+      section: 'analytics',
+    },
+    google_ads: {
+      name: 'Google Ads',
+      icon: <Campaign />,
+      code: `<!-- Google Ads --><script async src="https://www.googletagmanager.com/gtag/js?id=YOUR_ADS_ID"></script><script>window.dataLayer = window.dataLayer || [];function gtag(){dataLayer.push(arguments);}gtag('js', new Date());gtag('config', 'YOUR_ADS_ID');</script>`,
+      section: 'ads',
+    },
+    formspree: {
+      name: 'Formspree Form',
+      icon: <DescriptionIcon />,
+      code: `<form action="https://formspree.io/f/YOUR_FORM_ID" method="POST"><input type="text" name="name" placeholder="Your Name" required><input type="email" name="email" placeholder="Your Email" required><textarea name="message" placeholder="Your Message" required></textarea><button type="submit">Send Message</button></form>`,
+      section: 'forms',
+    },
+    typeform: {
+      name: 'Typeform Embed',
+      icon: <DescriptionIcon />,
+      code: `<div style="position:relative;width:100%;height:0;padding-bottom:56.25%;"><iframe src="https://embed.typeform.com/to/YOUR_FORM_ID" style="position:absolute;top:0;left:0;width:100%;height:100%;border:0;" allowfullscreen></iframe></div>`,
+      section: 'forms',
+    },
+    whatsapp: {
+      name: 'WhatsApp Chat',
+      icon: <WhatsApp />,
+      code: `<a href="https://wa.me/YOUR_PHONE_NUMBER" target="_blank" style="display:inline-flex;align-items:center;gap:8px;background:#25D366;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;">Chat with us on WhatsApp</a>`,
+      section: 'social',
+    },
+    discord: {
+      name: 'Discord Widget',
+      icon: <Chat />,
+      code: `<iframe src="https://discord.com/widget?id=YOUR_SERVER_ID&theme=dark" width="350" height="500" allowtransparency="true" frameborder="0" sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts"></iframe>`,
+      section: 'social',
+    },
+    instagram: {
+      name: 'Instagram Feed',
+      icon: <Instagram />,
+      code: `<div id="instagram-feed"><script src="https://cdn.jsdelivr.net/npm/@instagram-feed/embed@1.0.0/dist/ig-feed.min.js"></script><ig-feed username="YOUR_USERNAME" limit="6"></ig-feed></div>`,
+      section: 'social',
+    },
   };
 
-  const handleRemoveIntegration = (index) => {
-    setIntegrations(integrations.filter((_, i) => i !== index));
-    if (showSnackbar) showSnackbar('Integration removed', 'info');
+  const integrationTypes = [
+    {
+      type: 'forms',
+      label: 'Form Builder',
+      icon: DescriptionIcon,
+      providers: ['formspree', 'typeform', 'google_forms'],
+    },
+    {
+      type: 'payment',
+      label: 'Payment Gateway',
+      icon: Payment,
+      providers: ['stripe', 'paypal', 'square'],
+    },
+    {
+      type: 'email',
+      label: 'Email Marketing',
+      icon: EmailIcon,
+      providers: ['mailchimp', 'sendgrid', 'convertkit'],
+    },
+    {
+      type: 'calendar',
+      label: 'Calendar/Scheduling',
+      icon: CalendarToday,
+      providers: ['calendly', 'acuity', 'bookings'],
+    },
+    {
+      type: 'ads',
+      label: 'Ad Platforms',
+      icon: Campaign,
+      providers: ['google_ads', 'meta_ads', 'linkedin_ads'],
+    },
+  ];
+
+  const integrationCategories = [
+    { value: 'all', label: 'All' },
+    { value: 'payments', label: 'Payments' },
+    { value: 'marketing', label: 'Marketing' },
+    { value: 'social', label: 'Social' },
+    { value: 'analytics', label: 'Analytics' },
+    { value: 'storage', label: 'Storage' },
+    { value: 'security', label: 'Security' },
+    { value: 'ai', label: 'AI' },
+  ];
+
+  const handleConfigure = async () => {
+    if (!configData.provider || !configData.api_key) {
+      showSnackbar('Please enter API key and select a provider', 'warning');
+      return;
+    }
+    if (configData.api_key.length < 8) {
+      showSnackbar('Invalid API key format. Please check your credentials.', 'error');
+      return;
+    }
+    const newIntegration = {
+      id: Date.now().toString(),
+      type: configData.type,
+      provider: configData.provider,
+      api_key: configData.api_key,
+      api_secret: configData.api_secret,
+      settings: configData.settings,
+      webhook_url: configData.webhook_url,
+      status: 'connected',
+      connectedAt: new Date().toISOString(),
+      features: integrationFeatures[configData.provider] || null,
+    };
+    setIntegrations((prev) => [...prev, newIntegration]);
+    setConnectedIntegrations((prev) => [...prev, configData.provider]);
+    setIntegrationStatus((prev) => ({ ...prev, [configData.provider]: 'connected' }));
+    if (integrationFeatures[configData.provider]) {
+      setActiveIntegrationFeatures((prev) => [
+        ...prev,
+        {
+          ...integrationFeatures[configData.provider],
+          provider: configData.provider,
+          integrationId: newIntegration.id,
+        },
+      ]);
+    }
+    setConfigDialog(false);
+    setConfigData({
+      type: '',
+      provider: '',
+      api_key: '',
+      api_secret: '',
+      settings: {},
+      webhook_url: '',
+    });
+    if (onAddIntegration) onAddIntegration(newIntegration);
+    showSnackbar(`${configData.provider} integration added successfully! 🎉`, 'success');
+  };
+
+  const handleRemoveIntegration = (id) => {
+    const integration = integrations.find((i) => i.id === id);
+    if (integration) {
+      setIntegrations(integrations.filter((i) => i.id !== id));
+      setConnectedIntegrations((prev) => prev.filter((p) => p !== integration.provider));
+      setActiveIntegrationFeatures((prev) => prev.filter((f) => f.integrationId !== id));
+      setIntegrationStatus((prev) => ({ ...prev, [integration.provider]: 'disconnected' }));
+      if (onRemoveIntegration) onRemoveIntegration(id);
+      showSnackbar(`${integration.provider} integration removed`, 'info');
+    }
   };
 
   const handleTogglePrebuilt = (id) => {
@@ -907,12 +1018,53 @@ const IntegrationsPanel = ({ showSnackbar, projectId }) => {
     );
     const integration = prebuiltIntegrations.find((i) => i.id === id);
     const newStatus = !integration.connected;
-    if (showSnackbar) {
-      showSnackbar(
-        `${integration.name} ${newStatus ? 'connected' : 'disconnected'} successfully!`,
-        newStatus ? 'success' : 'info'
+    if (newStatus) {
+      setIntegrationStatus((prev) => ({ ...prev, [integration.name.toLowerCase()]: 'connected' }));
+      if (integrationFeatures[integration.name.toLowerCase()]) {
+        setActiveIntegrationFeatures((prev) => [
+          ...prev,
+          {
+            ...integrationFeatures[integration.name.toLowerCase()],
+            provider: integration.name.toLowerCase(),
+            integrationId: `prebuilt-${id}`,
+          },
+        ]);
+      }
+      showSnackbar(`${integration.name} connected successfully! 🎉`, 'success');
+    } else {
+      setIntegrationStatus((prev) => ({
+        ...prev,
+        [integration.name.toLowerCase()]: 'disconnected',
+      }));
+      setActiveIntegrationFeatures((prev) =>
+        prev.filter((f) => f.provider !== integration.name.toLowerCase())
       );
+      showSnackbar(`${integration.name} disconnected`, 'info');
     }
+  };
+
+  const handleDragStart = (e, feature) => {
+    e.dataTransfer.setData('application/json', JSON.stringify({ type: 'integration', feature }));
+    e.dataTransfer.effectAllowed = 'copy';
+  };
+
+  const handleDropOnCanvas = (e) => {
+    e.preventDefault();
+    setDragOverIntegration(null);
+    try {
+      const data = JSON.parse(e.dataTransfer.getData('application/json'));
+      if (data.type === 'integration' && data.feature) {
+        setSelectedIntegrationCode(data.feature.code);
+        setShowCodeDialog(true);
+      }
+    } catch (error) {
+      console.error('Error dropping integration:', error);
+    }
+  };
+
+  const copyIntegrationCode = () => {
+    navigator.clipboard.writeText(selectedIntegrationCode);
+    showSnackbar('Integration code copied to clipboard!', 'success');
   };
 
   const filteredPrebuilt = prebuiltIntegrations.filter((integration) => {
@@ -923,8 +1075,9 @@ const IntegrationsPanel = ({ showSnackbar, projectId }) => {
     return matchesSearch && matchesCategory;
   });
 
-  const connectedCount = prebuiltIntegrations.filter((i) => i.connected).length;
-  const totalCount = prebuiltIntegrations.length;
+  const connectedCount =
+    prebuiltIntegrations.filter((i) => i.connected).length + integrations.length;
+  const totalCount = prebuiltIntegrations.length + integrations.length;
 
   return (
     <Box sx={{ p: 2 }}>
@@ -932,8 +1085,53 @@ const IntegrationsPanel = ({ showSnackbar, projectId }) => {
         Third-Party Integrations
       </Typography>
       <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.6)', mb: 3 }}>
-        Connect your website with popular services for forms, payments, email marketing, and more
+        Connect your website with popular services.
       </Typography>
+
+      <Card
+        sx={{
+          mb: 2,
+          background: `linear-gradient(135deg, ${alpha(G_START, 0.1)} 0%, ${alpha(G_MID, 0.1)} 100%)`,
+          border: `1px solid ${alpha(G_START, 0.2)}`,
+          borderRadius: '12px',
+        }}
+      >
+        <CardContent sx={{ py: 1.5 }}>
+          <Box
+            sx={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: 1,
+            }}
+          >
+            <Box>
+              <Typography variant="caption" sx={{ color: 'white' }}>
+                Integration Status
+              </Typography>
+              <Typography
+                variant="caption"
+                sx={{ color: 'rgba(255,255,255,0.6)', display: 'block' }}
+              >
+                {connectedCount} of {totalCount} connected
+              </Typography>
+            </Box>
+            <Box sx={{ width: { xs: '100%', sm: 150 } }}>
+              <LinearProgress
+                variant="determinate"
+                value={(connectedCount / totalCount) * 100}
+                sx={{
+                  height: 4,
+                  borderRadius: 2,
+                  bgcolor: 'rgba(255,255,255,0.1)',
+                  '& .MuiLinearProgress-bar': { background: GRAD },
+                }}
+              />
+            </Box>
+          </Box>
+        </CardContent>
+      </Card>
 
       <Typography variant="subtitle1" sx={{ color: 'white', mb: 1.5 }}>
         Quick Connect
@@ -941,14 +1139,17 @@ const IntegrationsPanel = ({ showSnackbar, projectId }) => {
       <Grid container spacing={2} sx={{ mb: 3 }}>
         {integrationTypes.map((integration) => {
           const Icon = integration.icon;
+          const isConnected =
+            connectedIntegrations.includes(integration.providers[0]) ||
+            integrations.some((i) => i.type === integration.type);
           return (
             <Grid item xs={6} key={integration.type}>
               <Card
                 sx={{
                   cursor: 'pointer',
-                  transition: 'transform 0.2s',
-                  background: 'rgba(255,255,255,0.03)',
-                  border: '1px solid rgba(255,255,255,0.08)',
+                  transition: 'transform 0.2s, border-color 0.2s',
+                  background: isConnected ? alpha(G_END, 0.1) : 'rgba(255,255,255,0.03)',
+                  border: `1px solid ${isConnected ? alpha(G_END, 0.3) : 'rgba(255,255,255,0.08)'}`,
                   borderRadius: '12px',
                   '&:hover': { transform: 'translateY(-2px)', borderColor: G_START },
                 }}
@@ -959,10 +1160,25 @@ const IntegrationsPanel = ({ showSnackbar, projectId }) => {
                 }}
               >
                 <CardContent sx={{ textAlign: 'center', py: 1.5 }}>
-                  <Icon sx={{ fontSize: 28, color: G_START, mb: 0.5 }} />
+                  {Icon && (
+                    <Icon sx={{ fontSize: 28, color: isConnected ? G_END : G_START, mb: 0.5 }} />
+                  )}
                   <Typography variant="body2" sx={{ color: 'white' }}>
                     {integration.label}
                   </Typography>
+                  {isConnected && (
+                    <Chip
+                      label="Connected"
+                      size="small"
+                      sx={{
+                        height: 16,
+                        fontSize: '0.55rem',
+                        mt: 0.5,
+                        bgcolor: alpha(G_END, 0.2),
+                        color: G_END,
+                      }}
+                    />
+                  )}
                 </CardContent>
               </Card>
             </Grid>
@@ -1012,169 +1228,255 @@ const IntegrationsPanel = ({ showSnackbar, projectId }) => {
         ))}
       </Box>
 
-      <Card
-        sx={{
-          mb: 2,
-          background: `linear-gradient(135deg, ${alpha(G_START, 0.1)} 0%, ${alpha(G_MID, 0.1)} 100%)`,
-          border: `1px solid ${alpha(G_START, 0.2)}`,
-          borderRadius: '12px',
-        }}
-      >
-        <CardContent sx={{ py: 1.5 }}>
+      {activeIntegrationFeatures.length > 0 && (
+        <>
+          <Typography variant="subtitle2" sx={{ color: G_START, mt: 2, mb: 1 }}>
+            🎯 Active Integration Features (Drag to Canvas)
+          </Typography>
           <Box
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={handleDropOnCanvas}
             sx={{
+              border: `2px dashed ${alpha(G_START, 0.3)}`,
+              borderRadius: '12px',
+              p: 2,
+              mb: 2,
+              minHeight: '60px',
+              background: dragOverIntegration ? alpha(G_START, 0.1) : 'transparent',
+              transition: 'background 0.2s',
               display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
               flexWrap: 'wrap',
               gap: 1,
+              alignItems: 'center',
             }}
           >
-            <Box>
-              <Typography variant="caption" sx={{ color: 'white' }}>
-                Integration Status
-              </Typography>
-              <Typography
-                variant="caption"
-                sx={{ color: 'rgba(255,255,255,0.6)', display: 'block' }}
-              >
-                {connectedCount} of {totalCount} connected
-              </Typography>
-            </Box>
-            <Box sx={{ width: { xs: '100%', sm: 150 } }}>
-              <LinearProgress
-                variant="determinate"
-                value={(connectedCount / totalCount) * 100}
-                sx={{
-                  height: 4,
-                  borderRadius: 2,
-                  bgcolor: 'rgba(255,255,255,0.1)',
-                  '& .MuiLinearProgress-bar': { background: GRAD },
-                }}
-              />
-            </Box>
-          </Box>
-        </CardContent>
-      </Card>
-
-      <Box sx={{ maxHeight: 400, overflowY: 'auto', pr: 1 }}>
-        {filteredPrebuilt.map((integration) => (
-          <Card
-            key={integration.id}
-            sx={{
-              mb: 1.5,
-              background: 'rgba(255,255,255,0.03)',
-              border: `1px solid ${alpha(integration.color, 0.2)}`,
-              borderRadius: '12px',
-            }}
-          >
-            <CardContent sx={{ py: 1, '&:last-child': { pb: 1 } }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                  <Avatar
-                    sx={{
-                      bgcolor: alpha(integration.color, 0.2),
-                      width: 32,
-                      height: 32,
-                      color: integration.color,
-                    }}
-                  >
-                    {integration.icon}
-                  </Avatar>
-                  <Box>
-                    <Typography variant="body2" sx={{ color: 'white', fontWeight: 500 }}>
-                      {integration.name}
-                    </Typography>
-                    <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)' }}>
-                      {integration.description.substring(0, 40)}...
-                    </Typography>
-                  </Box>
-                </Box>
-                <Switch
-                  checked={integration.connected}
-                  onChange={() => handleTogglePrebuilt(integration.id)}
-                  size="small"
+            {activeIntegrationFeatures.map((feature, idx) => (
+              <Tooltip key={idx} title={`Drag to canvas to add ${feature.name}`}>
+                <Paper
+                  draggable
+                  onDragStart={(e) => handleDragStart(e, feature)}
                   sx={{
-                    '& .MuiSwitch-switchBase.Mui-checked': { color: G_START },
-                    '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': {
-                      backgroundColor: G_START,
+                    p: 1.5,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 1,
+                    bgcolor: alpha(G_START, 0.1),
+                    border: `1px solid ${alpha(G_START, 0.3)}`,
+                    borderRadius: '8px',
+                    cursor: 'grab',
+                    '&:hover': {
+                      bgcolor: alpha(G_START, 0.2),
+                      transform: 'scale(1.02)',
+                      transition: 'all 0.2s',
                     },
+                    '&:active': { cursor: 'grabbing' },
                   }}
-                />
-              </Box>
-            </CardContent>
-          </Card>
-        ))}
-      </Box>
+                >
+                  {feature.icon}
+                  <Typography variant="caption" sx={{ color: 'white' }}>
+                    {feature.name}
+                  </Typography>
+                  <Chip
+                    label={feature.section}
+                    size="small"
+                    sx={{
+                      height: 14,
+                      fontSize: '0.5rem',
+                      bgcolor: alpha(G_START, 0.15),
+                      color: G_START,
+                    }}
+                  />
+                </Paper>
+              </Tooltip>
+            ))}
+            <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.4) }}>
+              {activeIntegrationFeatures.length} feature(s) ready
+            </Typography>
+          </Box>
+        </>
+      )}
 
-      <Typography variant="subtitle2" sx={{ color: 'white', mt: 2, mb: 1 }}>
-        Custom Integrations ({integrations.length})
+      <Typography variant="subtitle2" sx={{ color: 'white', mt: 1, mb: 1 }}>
+        Available Integrations ({filteredPrebuilt.length})
       </Typography>
-      {integrations.length === 0 ? (
-        <Alert
-          severity="info"
-          sx={{
-            background: 'rgba(79,110,247,0.1)',
-            border: `1px solid ${G_START}44`,
-            color: '#A5B4FC',
-            borderRadius: '12px',
-            py: 0,
-          }}
-        >
-          <Typography variant="caption">
-            No custom integrations yet. Click any service above to add.
-          </Typography>
-        </Alert>
-      ) : (
-        integrations.map((integration, index) => {
-          const integrationType = integrationTypes.find((t) => t.type === integration.type);
-          const Icon = integrationType?.icon;
+      <Box sx={{ maxHeight: 400, overflowY: 'auto', pr: 1 }}>
+        {filteredPrebuilt.map((integration) => {
+          const isConnected =
+            integrationStatus[integration.name.toLowerCase()] === 'connected' ||
+            integration.connected;
+          const feature = integrationFeatures[integration.name.toLowerCase()];
           return (
             <Card
-              key={index}
+              key={integration.id}
               sx={{
-                mb: 1,
-                background: 'rgba(255,255,255,0.03)',
-                border: '1px solid rgba(255,255,255,0.08)',
+                mb: 1.5,
+                background: isConnected ? alpha(G_END, 0.05) : 'rgba(255,255,255,0.03)',
+                border: `1px solid ${isConnected ? alpha(G_END, 0.3) : alpha(integration.color, 0.2)}`,
                 borderRadius: '12px',
+                transition: 'all 0.2s',
+                '&:hover': { borderColor: integration.color },
               }}
             >
-              <CardContent sx={{ py: 1 }}>
+              <CardContent sx={{ py: 1, '&:last-child': { pb: 1 } }}>
                 <Box
-                  sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                  sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
                 >
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    {Icon && <Icon sx={{ fontSize: 20, color: G_START }} />}
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                    <Avatar
+                      sx={{
+                        bgcolor: isConnected ? alpha(G_END, 0.2) : alpha(integration.color, 0.2),
+                        width: 32,
+                        height: 32,
+                        color: isConnected ? G_END : integration.color,
+                      }}
+                    >
+                      {integration.icon}
+                    </Avatar>
                     <Box>
-                      <Typography variant="caption" sx={{ color: 'white' }}>
-                        {integrationType?.label} - {integration.provider}
+                      <Typography variant="body2" sx={{ color: 'white', fontWeight: 500 }}>
+                        {integration.name}
                       </Typography>
-                      <Typography
-                        variant="caption"
-                        sx={{ color: 'rgba(255,255,255,0.5)', display: 'block' }}
-                      >
-                        {integration.api_key ? 'API key configured' : 'Settings configured'}
+                      <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)' }}>
+                        {integration.description.substring(0, 40)}...
                       </Typography>
+                      {feature && isConnected && (
+                        <Chip
+                          label="Feature Ready"
+                          size="small"
+                          sx={{
+                            height: 14,
+                            fontSize: '0.5rem',
+                            mt: 0.5,
+                            bgcolor: alpha(G_END, 0.2),
+                            color: G_END,
+                          }}
+                        />
+                      )}
                     </Box>
                   </Box>
-                  <IconButton
-                    size="small"
-                    onClick={() => handleRemoveIntegration(index)}
-                    sx={{ color: '#ff4444' }}
-                  >
-                    <Delete fontSize="small" />
-                  </IconButton>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    {feature && isConnected && (
+                      <Tooltip title="Drag to canvas">
+                        <IconButton
+                          size="small"
+                          draggable
+                          onDragStart={(e) =>
+                            handleDragStart(e, {
+                              ...feature,
+                              provider: integration.name.toLowerCase(),
+                            })
+                          }
+                          sx={{
+                            color: G_START,
+                            bgcolor: alpha(G_START, 0.1),
+                            '&:hover': { bgcolor: alpha(G_START, 0.2) },
+                          }}
+                        >
+                          <DragHandle fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                    )}
+                    <Switch
+                      checked={isConnected}
+                      onChange={() => handleTogglePrebuilt(integration.id)}
+                      size="small"
+                      sx={{
+                        '& .MuiSwitch-switchBase.Mui-checked': {
+                          color: isConnected ? G_END : G_START,
+                        },
+                        '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': {
+                          backgroundColor: isConnected ? G_END : G_START,
+                        },
+                      }}
+                    />
+                  </Box>
                 </Box>
               </CardContent>
             </Card>
           );
-        })
+        })}
+      </Box>
+
+      {integrations.length > 0 && (
+        <>
+          <Typography variant="subtitle2" sx={{ color: 'white', mt: 2, mb: 1 }}>
+            Custom Integrations ({integrations.length})
+          </Typography>
+          {integrations.map((integration) => {
+            const integrationType = integrationTypes.find((t) => t.type === integration.type);
+            const Icon = integrationType?.icon;
+            const feature = integrationFeatures[integration.provider];
+            return (
+              <Card
+                key={integration.id}
+                sx={{
+                  mb: 1,
+                  background: alpha(G_END, 0.05),
+                  border: `1px solid ${alpha(G_END, 0.2)}`,
+                  borderRadius: '12px',
+                }}
+              >
+                <CardContent sx={{ py: 1 }}>
+                  <Box
+                    sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                  >
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      {Icon && <Icon sx={{ fontSize: 20, color: G_END }} />}
+                      <Box>
+                        <Typography variant="caption" sx={{ color: 'white' }}>
+                          {integrationType?.label} - {integration.provider}
+                        </Typography>
+                        <Typography
+                          variant="caption"
+                          sx={{ color: 'rgba(255,255,255,0.5)', display: 'block' }}
+                        >
+                          API Key: {integration.api_key.substring(0, 8)}...
+                        </Typography>
+                      </Box>
+                    </Box>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                      {feature && (
+                        <Tooltip title="Drag to canvas">
+                          <IconButton
+                            size="small"
+                            draggable
+                            onDragStart={(e) =>
+                              handleDragStart(e, {
+                                ...feature,
+                                provider: integration.provider,
+                                integrationId: integration.id,
+                              })
+                            }
+                            sx={{
+                              color: G_START,
+                              bgcolor: alpha(G_START, 0.1),
+                              '&:hover': { bgcolor: alpha(G_START, 0.2) },
+                            }}
+                          >
+                            <DragHandle fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
+                      )}
+                      <IconButton
+                        size="small"
+                        onClick={() => handleRemoveIntegration(integration.id)}
+                        sx={{ color: '#ff4444' }}
+                      >
+                        <Delete fontSize="small" />
+                      </IconButton>
+                    </Box>
+                  </Box>
+                </CardContent>
+              </Card>
+            );
+          })}
+        </>
       )}
 
       <Dialog
         open={configDialog}
         onClose={() => setConfigDialog(false)}
-        maxWidth="xs"
+        maxWidth="sm"
         fullWidth
         PaperProps={{
           sx: {
@@ -1189,6 +1491,11 @@ const IntegrationsPanel = ({ showSnackbar, projectId }) => {
         </DialogTitle>
         <DialogContent>
           <Box sx={{ mt: 1 }}>
+            <Alert severity="info" sx={{ mb: 2, bgcolor: alpha(G_START, 0.1), color: '#A5B4FC' }}>
+              <Typography variant="caption">
+                Enter your API key or access token to activate this integration.
+              </Typography>
+            </Alert>
             <FormControl fullWidth size="small" sx={{ mb: 2 }}>
               <InputLabel sx={{ color: 'rgba(255,255,255,0.6)' }}>Provider</InputLabel>
               <Select
@@ -1215,6 +1522,7 @@ const IntegrationsPanel = ({ showSnackbar, projectId }) => {
                   fullWidth
                   size="small"
                   label="API Key / Access Token"
+                  placeholder="Enter your API key here..."
                   value={configData.api_key}
                   onChange={(e) => setConfigData({ ...configData, api_key: e.target.value })}
                   sx={{
@@ -1225,17 +1533,42 @@ const IntegrationsPanel = ({ showSnackbar, projectId }) => {
                     },
                   }}
                 />
-                <FormControlLabel
-                  control={<Switch size="small" />}
-                  label="Enable on all pages"
+                <TextField
+                  fullWidth
+                  size="small"
+                  label="API Secret (optional)"
+                  placeholder="Enter your API secret..."
+                  value={configData.api_secret}
+                  onChange={(e) => setConfigData({ ...configData, api_secret: e.target.value })}
                   sx={{
-                    mt: 0,
-                    '& .MuiTypography-root': {
-                      fontSize: '0.75rem',
-                      color: 'rgba(255,255,255,0.7)',
+                    mb: 2,
+                    '& .MuiOutlinedInput-root': {
+                      color: 'white',
+                      '& fieldset': { borderColor: 'rgba(255,255,255,0.2)' },
                     },
                   }}
                 />
+                <TextField
+                  fullWidth
+                  size="small"
+                  label="Webhook URL (optional)"
+                  placeholder="https://your-webhook-url.com"
+                  value={configData.webhook_url}
+                  onChange={(e) => setConfigData({ ...configData, webhook_url: e.target.value })}
+                  sx={{
+                    mb: 2,
+                    '& .MuiOutlinedInput-root': {
+                      color: 'white',
+                      '& fieldset': { borderColor: 'rgba(255,255,255,0.2)' },
+                    },
+                  }}
+                />
+                <Box sx={{ mt: 2, p: 2, bgcolor: alpha(G_START, 0.05), borderRadius: '8px' }}>
+                  <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.6) }}>
+                    ✅ After connecting, you'll be able to drag and drop integration features onto
+                    your page.
+                  </Typography>
+                </Box>
               </>
             )}
           </Box>
@@ -1250,7 +1583,80 @@ const IntegrationsPanel = ({ showSnackbar, projectId }) => {
             disabled={!configData.provider || !configData.api_key}
             sx={{ background: GRAD, borderRadius: '20px', textTransform: 'none', px: 3 }}
           >
-            Add Integration
+            Connect & Activate
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={showCodeDialog}
+        onClose={() => setShowCodeDialog(false)}
+        maxWidth="md"
+        fullWidth
+        PaperProps={{
+          sx: {
+            background: '#0D1220',
+            border: '1px solid rgba(255,255,255,0.08)',
+            borderRadius: '16px',
+          },
+        }}
+      >
+        <DialogTitle
+          sx={{
+            color: 'white',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+          }}
+        >
+          <span>Integration Code</span>
+          <IconButton onClick={() => setShowCodeDialog(false)} sx={{ color: 'white' }}>
+            <Close />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent>
+          <Alert severity="info" sx={{ mb: 2, bgcolor: alpha(G_START, 0.1), color: '#A5B4FC' }}>
+            <Typography variant="caption">
+              Copy this code and paste it into your page. Replace placeholder values with your
+              actual credentials.
+            </Typography>
+          </Alert>
+          <Paper
+            sx={{
+              p: 2,
+              bgcolor: '#1A1F2E',
+              borderRadius: '8px',
+              maxHeight: '400px',
+              overflow: 'auto',
+              position: 'relative',
+            }}
+          >
+            <Box
+              component="pre"
+              sx={{
+                color: '#E0E0E0',
+                fontFamily: 'monospace',
+                fontSize: '12px',
+                whiteSpace: 'pre-wrap',
+                wordWrap: 'break-word',
+                margin: 0,
+              }}
+            >
+              {selectedIntegrationCode}
+            </Box>
+          </Paper>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setShowCodeDialog(false)} sx={{ color: 'rgba(255,255,255,0.6)' }}>
+            Close
+          </Button>
+          <Button
+            variant="contained"
+            onClick={copyIntegrationCode}
+            startIcon={<ContentCopy />}
+            sx={{ background: GRAD, borderRadius: '20px', textTransform: 'none', px: 3 }}
+          >
+            Copy Code
           </Button>
         </DialogActions>
       </Dialog>
@@ -1258,8 +1664,9 @@ const IntegrationsPanel = ({ showSnackbar, projectId }) => {
   );
 };
 
+// ── MAIN DESIGN STUDIO COMPONENT ─────────────────────────────────────
 const DesignStudio = ({
-  currentProject,
+  currentProject = getInitialProject(),
   setCurrentProject,
   mergedDesign,
   setMergedDesign,
@@ -1267,8 +1674,10 @@ const DesignStudio = ({
 }) => {
   const theme = useTheme();
   const navigate = useNavigate();
-  // const { user } = useAuth(); // Uncomment when auth is set up
+  const [searchParams] = useSearchParams();
+  const { user, token, logout } = useAuth();
 
+  // ── State ──
   const [activeTab, setActiveTab] = useState(0);
   const [selectedComponent, setSelectedComponent] = useState(null);
   const [selectedTextElement, setSelectedTextElement] = useState(null);
@@ -1278,11 +1687,8 @@ const DesignStudio = ({
   const [generatedCode, setGeneratedCode] = useState('');
   const [saving, setSaving] = useState(false);
   const [publishing, setPublishing] = useState(false);
-  const [snackbar, setSnackbar] = useState({
-    open: false,
-    message: '',
-    severity: 'success',
-  });
+  const [loading, setLoading] = useState(false);
+  const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
   const [components, setComponents] = useState([]);
   const [textElements, setTextElements] = useState([]);
   const [imageElements, setImageElements] = useState([]);
@@ -1292,8 +1698,6 @@ const DesignStudio = ({
   const [publishDialogOpen, setPublishDialogOpen] = useState(false);
   const [publishUrl, setPublishUrl] = useState('');
   const [colorPickerAnchor, setColorPickerAnchor] = useState(null);
-
-  // Save modal state
   const [saveModalOpen, setSaveModalOpen] = useState(false);
   const [projectNameInput, setProjectNameInput] = useState('');
   const [savedProjectCard, setSavedProjectCard] = useState(null);
@@ -1303,42 +1707,36 @@ const DesignStudio = ({
   const [canvasScale, setCanvasScale] = useState(1);
   const [imageUploadDialogOpen, setImageUploadDialogOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
-
-  // New publish modal states
   const [publishModalOpen, setPublishModalOpen] = useState(false);
   const [websiteName, setWebsiteName] = useState('');
   const [isSavingToDB, setIsSavingToDB] = useState(false);
   const [generatedSlug, setGeneratedSlug] = useState('');
   const [slugError, setSlugError] = useState('');
   const [isCheckingSlug, setIsCheckingSlug] = useState(false);
-
-  const fileInputRef = useRef(null);
-  const canvasRef = useRef(null);
-  const mockFileInputRef = useRef(null);
-  const autoSaveTimerRef = useRef(null);
-
-  // ── Multi-page support ────────────────────────────────────────────────
   const [pages, setPages] = useState([
     { id: 'page-1', name: 'Home', components: [], textElements: [], imageElements: [] },
   ]);
   const [activePageId, setActivePageId] = useState('page-1');
   const [addPageDialogOpen, setAddPageDialogOpen] = useState(false);
   const [newPageName, setNewPageName] = useState('');
-
-  // ── Projects gallery ─────────────────────────────────────────────────
   const [showProjectsGallery, setShowProjectsGallery] = useState(false);
   const [allProjects, setAllProjects] = useState([]);
   const [galleryPreviewProject, setGalleryPreviewProject] = useState(null);
-
-  // ── Mock / production image upload ───────────────────────────────────
-  const [imageUploadMode, setImageUploadMode] = useState('mock'); // 'mock' | 'production'
+  const [imageUploadMode, setImageUploadMode] = useState('mock');
   const [mockImageUrl, setMockImageUrl] = useState('');
-
-  // ── Auto-save ─────────────────────────────────────────────────────────
-  const [autoSaveStatus, setAutoSaveStatus] = useState('idle'); // 'idle' | 'saving' | 'saved'
-
-  // ── Colour palette component state ────────────────────────────────────
+  const [autoSaveStatus, setAutoSaveStatus] = useState('idle');
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState(() => {
+    const stored = localStorage.getItem('autoSaveEnabled');
+    return stored === null ? true : stored === 'true';
+  });
   const [paletteComponentOpen, setPaletteComponentOpen] = useState(false);
+
+  const fileInputRef = useRef(null);
+  const replaceImageInputRef = useRef(null);
+  const canvasRef = useRef(null);
+  const autoSaveTimerRef = useRef(null);
+  const periodicAutoSaveRef = useRef(null);
+  const latestStateRef = useRef(null);
 
   const [globalStyles, setGlobalStyles] = useState({
     primaryColor: G_START,
@@ -1358,20 +1756,66 @@ const DesignStudio = ({
     backgroundOpacity: 1,
   });
 
-  // Add this to your existing styles or in a useEffect
+  // ── Keyboard shortcuts ──
   useEffect(() => {
-    // Load saved theme on mount
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        setSelectedComponent(null);
+        setSelectedTextElement(null);
+        setSelectedImageElement(null);
+        setEditingText(null);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        handleUndo();
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+        e.preventDefault();
+        handleRedo();
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault();
+        handleSave();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [historyIndex, history]);
+
+  // ── Load projects ──
+  useEffect(() => {
+    if (token) loadProjectsFromDatabase();
+    else loadProjectsFromLocalStorage();
+  }, [token]);
+
+  // ── Load from URL params ──
+  useEffect(() => {
+    const projectParam = searchParams.get('project');
+    if (projectParam) {
+      loadProjectFromUrl(projectParam);
+      return;
+    }
+    const designParam = searchParams.get('design');
+    if (designParam && Array.isArray(design) && design.length > 0) {
+      const decoded = decodeURIComponent(designParam);
+      const matched = design.find(
+        (d) =>
+          d.name === decoded ||
+          d.id === decoded ||
+          d.name?.toLowerCase() === decoded.toLowerCase() ||
+          d.id?.toLowerCase() === decoded.toLowerCase()
+      );
+      if (matched) loadDesignFromTemplates(matched);
+    }
+  }, [searchParams, token]);
+
+  // ── Load saved theme ──
+  useEffect(() => {
     const savedThemeId = localStorage.getItem('currentColorTheme');
     if (savedThemeId) {
       const savedTheme = colorThemes.find((theme) => theme.id === savedThemeId);
-      if (savedTheme) {
-        applyColorTheme(savedTheme, setGlobalStyles, showSnackbar);
-      }
+      if (savedTheme) applyColorTheme(savedTheme);
     }
-  }, []);
-
-  // Load saved design colors from localStorage on mount
-  useEffect(() => {
     const savedColors = localStorage.getItem('selectedDesignColors');
     if (savedColors) {
       try {
@@ -1389,8 +1833,6 @@ const DesignStudio = ({
         console.error('Error loading saved colors:', e);
       }
     }
-
-    // Load saved uploaded images
     const savedImages = localStorage.getItem('uploadedImages');
     if (savedImages) {
       try {
@@ -1401,19 +1843,66 @@ const DesignStudio = ({
     }
   }, []);
 
-  // Save uploaded images to localStorage
   useEffect(() => {
     localStorage.setItem('uploadedImages', JSON.stringify(uploadedImages));
   }, [uploadedImages]);
 
-  // ── Auto-save whenever canvas content changes ─────────────────────────
+  // ── Keep selected item panels in sync with live data ──
+  // Without this, editing a component/text/image (colors, content, styles)
+  // updates the canvas but the side panel keeps showing stale values,
+  // since selectedComponent/selectedTextElement/selectedImageElement are
+  // separate state snapshots rather than derived from the arrays below.
+  useEffect(() => {
+    if (!selectedComponent) return;
+    const fresh = components.find((c) => c.id === selectedComponent.id);
+    if (!fresh) setSelectedComponent(null);
+    else if (fresh !== selectedComponent) setSelectedComponent(fresh);
+  }, [components]);
+
+  useEffect(() => {
+    if (!selectedTextElement) return;
+    const fresh = textElements.find((t) => t.id === selectedTextElement.id);
+    if (!fresh) setSelectedTextElement(null);
+    else if (fresh !== selectedTextElement) setSelectedTextElement(fresh);
+  }, [textElements]);
+
+  useEffect(() => {
+    if (!selectedImageElement) return;
+    const fresh = imageElements.find((i) => i.id === selectedImageElement.id);
+    if (!fresh) setSelectedImageElement(null);
+    else if (fresh !== selectedImageElement) setSelectedImageElement(fresh);
+  }, [imageElements]);
+
+  useEffect(() => {
+    localStorage.setItem('autoSaveEnabled', String(autoSaveEnabled));
+  }, [autoSaveEnabled]);
+
+  // ── Auto-save ──
+  // Keep a ref to the latest state so the periodic (every-10-minutes)
+  // save always has fresh data without needing to restart the interval.
   useEffect(() => {
     const projectId = currentProject?.id || savedProjectCard?.id;
-    if (!projectId) return; // nothing to save until first named save
+    latestStateRef.current = {
+      projectId,
+      name: currentProject?.name || savedProjectCard?.name || 'Untitled',
+      components,
+      textElements,
+      imageElements,
+      uploadedImages,
+      styles: globalStyles,
+      pages,
+      type: currentProject?.type || 'custom',
+      status: currentProject?.status || 'draft',
+    };
+  });
 
+  // Quick debounce save shortly after the user stops editing, so in-progress
+  // work isn't lost between the 10-minute periodic saves.
+  useEffect(() => {
+    const projectId = currentProject?.id || savedProjectCard?.id;
+    if (!projectId || !autoSaveEnabled) return;
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     setAutoSaveStatus('saving');
-
     autoSaveTimerRef.current = setTimeout(() => {
       try {
         const projectData = {
@@ -1429,9 +1918,7 @@ const DesignStudio = ({
           type: currentProject?.type || 'custom',
           status: currentProject?.status || 'draft',
         };
-        localStorage.setItem(`project_${projectId}`, JSON.stringify(projectData));
-        localStorage.setItem('latest_project_id', projectId);
-        localStorage.setItem('latest_project_data', JSON.stringify(projectData));
+        saveProjectToLocalStorage(projectData);
         if (setCurrentProject) setCurrentProject(projectData);
         setAutoSaveStatus('saved');
         setTimeout(() => setAutoSaveStatus('idle'), 2000);
@@ -1439,11 +1926,43 @@ const DesignStudio = ({
         setAutoSaveStatus('idle');
       }
     }, 1500);
-
     return () => clearTimeout(autoSaveTimerRef.current);
-  }, [components, textElements, imageElements, globalStyles, pages]); // eslint-disable-line
+  }, [components, textElements, imageElements, globalStyles, pages, autoSaveEnabled]);
 
-  // ── Sync active-page canvas on page switch ───────────────────────────
+  // Guaranteed periodic save every 10 minutes, regardless of edit activity.
+  // Re-armed whenever the user flips the autosave switch back on.
+  useEffect(() => {
+    if (!autoSaveEnabled) return;
+    const TEN_MINUTES = 10 * 60 * 1000;
+    periodicAutoSaveRef.current = setInterval(() => {
+      const state = latestStateRef.current;
+      if (!state || !state.projectId) return;
+      try {
+        const projectData = {
+          id: state.projectId,
+          name: state.name,
+          components: state.components,
+          textElements: state.textElements,
+          imageElements: state.imageElements,
+          uploadedImages: state.uploadedImages,
+          styles: state.styles,
+          pages: state.pages,
+          lastEdited: new Date().toISOString(),
+          type: state.type,
+          status: state.status,
+        };
+        setAutoSaveStatus('saving');
+        saveProjectToLocalStorage(projectData);
+        if (setCurrentProject) setCurrentProject(projectData);
+        setAutoSaveStatus('saved');
+        setTimeout(() => setAutoSaveStatus('idle'), 2000);
+      } catch (e) {
+        setAutoSaveStatus('idle');
+      }
+    }, TEN_MINUTES);
+    return () => clearInterval(periodicAutoSaveRef.current);
+  }, [autoSaveEnabled]);
+
   useEffect(() => {
     const page = pages.find((p) => p.id === activePageId);
     if (page) {
@@ -1451,40 +1970,167 @@ const DesignStudio = ({
       setTextElements(page.textElements || []);
       setImageElements(page.imageElements || []);
     }
-  }, [activePageId]); // eslint-disable-line
+  }, [activePageId]);
 
-  // ── Load all saved projects for the gallery ───────────────────────────
-  useEffect(() => {
-    if (showProjectsGallery) {
-      const projects = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith('project_')) {
-          try {
-            const data = JSON.parse(localStorage.getItem(key));
-            if (data && data.id && data.name) projects.push(data);
-          } catch (_) {}
+  // ── Load functions ──
+  const loadProjectsFromDatabase = async () => {
+    setLoading(true);
+    try {
+      const response = await axios.get(`${API_BASE}/api/projects`, {
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      });
+      const projectsData = response.data;
+      setAllProjects(projectsData);
+      if (currentProject?.id) {
+        const dbProject = projectsData.find((p) => p.id === currentProject.id);
+        if (dbProject) {
+          setCurrentProject(dbProject);
+          const customizations = dbProject.customizations || {};
+          setComponents(customizations.components || []);
+          setTextElements(customizations.textElements || []);
+          setImageElements(customizations.imageElements || []);
+          setUploadedImages(customizations.uploadedImages || []);
+          if (customizations.styles)
+            setGlobalStyles((prev) => ({ ...prev, ...customizations.styles }));
+          if (customizations.pages) {
+            setPages(customizations.pages);
+            setActivePageId(customizations.pages[0]?.id || 'page-1');
+          }
         }
       }
-      projects.sort((a, b) => new Date(b.lastEdited) - new Date(a.lastEdited));
-      setAllProjects(projects);
+    } catch (error) {
+      console.error('Error loading projects from database:', error);
+      loadProjectsFromLocalStorage();
+    } finally {
+      setLoading(false);
     }
-  }, [showProjectsGallery]);
+  };
 
-  // Generate code when showCode is toggled
-  useEffect(() => {
-    if (showCode) {
-      generateHTMLCode();
+  const loadProjectsFromLocalStorage = () => {
+    const projectList = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith('project_')) {
+        try {
+          const data = JSON.parse(localStorage.getItem(key) || '');
+          if (data && data.id && data.name) projectList.push(data);
+        } catch (e) {
+          console.error('Error parsing project:', e);
+        }
+      }
     }
-  }, [showCode, components, textElements, imageElements, globalStyles]);
+    setAllProjects(projectList);
+  };
 
-  // Check slug uniqueness function
+  const loadProjectFromUrl = async (projectId) => {
+    setLoading(true);
+    try {
+      if (token) {
+        const response = await axios.get(`${API_BASE}/api/projects/${projectId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const project = response.data;
+        if (project) {
+          handleOpenProjectInEditor(project);
+          saveProjectToLocalStorage({ ...project, id: projectId });
+          showSnackbar(`Loaded "${project.name}"`, 'success');
+          return;
+        }
+      }
+      const localData = localStorage.getItem(`project_${projectId}`);
+      if (localData) {
+        const project = JSON.parse(localData);
+        handleOpenProjectInEditor(project);
+        localStorage.setItem('latest_project_id', projectId);
+        showSnackbar(`Loaded "${project.name}" from local storage`, 'success');
+        return;
+      }
+      showSnackbar(`Project ${projectId} not found`, 'warning');
+    } catch (error) {
+      console.error('Error loading project from URL:', error);
+      const localData = localStorage.getItem(`project_${projectId}`);
+      if (localData) {
+        try {
+          const project = JSON.parse(localData);
+          handleOpenProjectInEditor(project);
+          localStorage.setItem('latest_project_id', projectId);
+          showSnackbar(`Loaded "${project.name}" (offline)`, 'info');
+        } catch (e) {
+          showSnackbar('Failed to load project', 'error');
+        }
+      } else {
+        showSnackbar('Failed to load project', 'error');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const saveProjectToDatabase = async (projectData) => {
+    try {
+      const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+      let response;
+      try {
+        const getResponse = await axios.get(`${API_BASE}/api/projects/${projectData.id}`, {
+          headers,
+        });
+        if (getResponse.data) {
+          response = await axios.put(
+            `${API_BASE}/api/projects/${projectData.id}`,
+            {
+              name: projectData.name,
+              customizations: {
+                components: projectData.components || [],
+                textElements: projectData.textElements || [],
+                imageElements: projectData.imageElements || [],
+                uploadedImages: projectData.uploadedImages || [],
+                styles: projectData.styles || {},
+                pages: projectData.pages || [],
+              },
+              html_code: projectData.html_code || '',
+            },
+            { headers }
+          );
+        }
+      } catch (error) {
+        response = await axios.post(
+          `${API_BASE}/api/projects`,
+          {
+            name: projectData.name,
+            designs: [],
+            customizations: {
+              components: projectData.components || [],
+              textElements: projectData.textElements || [],
+              imageElements: projectData.imageElements || [],
+              uploadedImages: projectData.uploadedImages || [],
+              styles: projectData.styles || {},
+              pages: projectData.pages || [],
+            },
+          },
+          { headers }
+        );
+      }
+      return response.data;
+    } catch (error) {
+      console.error('Error saving to database:', error);
+      throw error;
+    }
+  };
+
+  const saveProjectToLocalStorage = (projectData) => {
+    localStorage.setItem(`project_${projectData.id}`, JSON.stringify(projectData));
+    localStorage.setItem('latest_project_id', projectData.id);
+    localStorage.setItem('latest_project_data', JSON.stringify(projectData));
+  };
+
   const checkSlugUniqueness = async (slug) => {
     if (!slug || slug.length < 3) return true;
-
     setIsCheckingSlug(true);
     try {
-      const response = await axios.get(`/api/websites/check-slug?slug=${slug}`);
+      const response = await axios.get(`${API_BASE}/api/websites/check-slug`, {
+        params: { slug },
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       setIsCheckingSlug(false);
       return response.data.isUnique;
     } catch (error) {
@@ -1494,356 +2140,147 @@ const DesignStudio = ({
     }
   };
 
-  // Generate HTML/CSS code from the current design
-  const generateHTMLCode = () => {
-    const generateStyles = () => {
-      return `
-        <style>
-          * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-          }
-          
-          body {
-            background-color: ${globalStyles.backgroundColor};
-            color: ${globalStyles.textColor};
-            font-family: ${globalStyles.fontFamily};
-            line-height: 1.6;
-          }
-          
-          h1, h2, h3, h4, h5, h6 {
-            color: ${globalStyles.headingColor};
-          }
-          
-          a {
-            color: ${globalStyles.primaryColor};
-            text-decoration: none;
-          }
-          
-          a:hover {
-            text-decoration: underline;
-          }
-          
-          button {
-            background: ${globalStyles.primaryColor};
-            border: none;
-            border-radius: ${globalStyles.buttonStyle === 'rounded' ? '999px' : globalStyles.borderRadius};
-            padding: 12px 24px;
-            color: white;
-            cursor: pointer;
-            transition: all 0.3s ease;
-          }
-          
-          button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-          }
-          
-          .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: ${globalStyles.spacing};
-          }
-          
-          .hero-section {
-            text-align: center;
-            padding: 80px 20px;
-            background: linear-gradient(135deg, ${globalStyles.primaryColor}, ${globalStyles.secondaryColor});
-            border-radius: ${globalStyles.borderRadius};
-            margin-bottom: ${globalStyles.spacing};
-          }
-          
-          .features-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: ${globalStyles.spacing};
-            padding: 60px 20px;
-          }
-          
-          .feature-card {
-            background: ${alpha(globalStyles.primaryColor, 0.05)};
-            padding: 24px;
-            border-radius: ${globalStyles.borderRadius};
-            text-align: center;
-            transition: transform 0.3s ease;
-          }
-          
-          .feature-card:hover {
-            transform: translateY(-8px);
-          }
-          
-          .gallery-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: ${globalStyles.spacing};
-            padding: 60px 20px;
-          }
-          
-          .gallery-item {
-            background: ${alpha(globalStyles.primaryColor, 0.05)};
-            padding: 16px;
-            border-radius: ${globalStyles.borderRadius};
-            text-align: center;
-          }
-          
-          .gallery-item img {
-            width: 100%;
-            height: 200px;
-            object-fit: cover;
-            border-radius: ${globalStyles.borderRadius};
-            margin-bottom: 16px;
-          }
-          
-          .contact-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: ${globalStyles.spacing};
-            padding: 60px 20px;
-          }
-          
-          .contact-form input,
-          .contact-form textarea {
-            width: 100%;
-            padding: 12px;
-            margin-bottom: 16px;
-            background: ${alpha(globalStyles.primaryColor, 0.05)};
-            border: 1px solid ${alpha(globalStyles.textColor, 0.2)};
-            border-radius: ${globalStyles.borderRadius};
-            color: ${globalStyles.textColor};
-          }
-          
-          .pricing-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-            gap: ${globalStyles.spacing};
-            padding: 60px 20px;
-          }
-          
-          .pricing-card {
-            background: ${alpha(globalStyles.primaryColor, 0.05)};
-            padding: 32px;
-            border-radius: ${globalStyles.borderRadius};
-            text-align: center;
-            transition: transform 0.3s ease;
-          }
-          
-          .pricing-card:hover {
-            transform: translateY(-8px);
-          }
-          
-          .pricing-price {
-            font-size: 48px;
-            font-weight: bold;
-            margin: 20px 0;
-          }
-          
-          .draggable-element {
-            position: relative;
-            cursor: pointer;
-            transition: transform 0.2s ease;
-          }
-          
-          .draggable-element:hover {
-            transform: scale(1.02);
-          }
-          
-          @keyframes fadeInUp {
-            from {
-              opacity: 0;
-              transform: translateY(20px);
-            }
-            to {
-              opacity: 1;
-              transform: translateY(0);
-            }
-          }
-          
-          [data-animate] {
-            animation: fadeInUp 0.6s ease-out;
-          }
-        </style>
-      `;
-    };
-
-    const generateTextElements = () => {
-      return textElements
-        .map((element) => {
-          const styles = element.styles;
-          const styleString = Object.entries(styles)
-            .map(([key, value]) => `${key.replace(/([A-Z])/g, '-$1').toLowerCase()}: ${value}`)
-            .join('; ');
-
-          if (element.tag === 'a') {
-            return `<${element.tag} href="${element.href || '#'}" style="${styleString}" class="draggable-element">${element.content}</${element.tag}>`;
-          }
-          return `<${element.tag} style="${styleString}" class="draggable-element">${element.content}</${element.tag}>`;
-        })
-        .join('\n');
-    };
-
-    const generateImageElements = () => {
-      return imageElements
-        .map((element) => {
-          const styleString = `width: ${element.width}; height: ${element.height}; object-fit: ${element.objectFit}; border-radius: ${element.borderRadius}; filter: ${element.styles?.filter || 'none'}; transform: ${element.styles?.transform || 'none'};`;
-          return `<img src="${element.imageUrl}" alt="${element.alt}" style="${styleString}" class="draggable-element" />`;
-        })
-        .join('\n');
-    };
-
-    const generateComponents = () => {
-      return components
-        .map((component) => {
-          switch (component.type) {
-            case 'hero':
-              return `
-              <div class="hero-section" style="text-align: center; padding: 80px 20px;">
-                ${component.content.image ? `<img src="${component.content.image}" alt="Hero" style="max-width: 100%; margin-bottom: 24px; border-radius: ${globalStyles.borderRadius};" />` : ''}
-                <h1 style="font-size: 48px; margin-bottom: 16px;">${component.content.title}</h1>
-                <p style="font-size: 20px; margin-bottom: 32px; color: ${alpha(globalStyles.textColor, 0.8)};">${component.content.subtitle}</p>
-                <button>${component.content.buttonText}</button>
-              </div>
-            `;
-
-            case 'features':
-              return `
-              <div style="padding: 60px 20px;">
-                <h2 style="text-align: center; margin-bottom: 48px;">${component.content.title}</h2>
-                <div class="features-grid">
-                  ${component.content.items
-                    .map(
-                      (item) => `
-                    <div class="feature-card">
-                      ${item.image ? `<img src="${item.image}" alt="${item.title}" style="width: 100%; height: 200px; object-fit: cover; border-radius: ${globalStyles.borderRadius}; margin-bottom: 16px;" />` : ''}
-                      <h3 style="margin-bottom: 12px; color: ${globalStyles.primaryColor};">${item.title}</h3>
-                      <p>${item.description}</p>
-                    </div>
-                  `
-                    )
-                    .join('')}
-                </div>
-              </div>
-            `;
-
-            case 'gallery':
-              return `
-              <div style="padding: 60px 20px;">
-                <h2 style="text-align: center; margin-bottom: 48px;">${component.content.title}</h2>
-                <div class="gallery-grid">
-                  ${component.content.items
-                    .map(
-                      (item) => `
-                    <div class="gallery-item">
-                      ${item.image ? `<img src="${item.image}" alt="${item.title}" />` : '<div style="height: 200px; background: rgba(0,0,0,0.1); border-radius: 8px;"></div>'}
-                      <h3>${item.title}</h3>
-                      <p>${item.description}</p>
-                    </div>
-                  `
-                    )
-                    .join('')}
-                </div>
-              </div>
-            `;
-
-            case 'contact':
-              return `
-              <div style="padding: 60px 20px;">
-                <h2 style="text-align: center; margin-bottom: 48px;">${component.content.title}</h2>
-                <div class="contact-grid">
-                  <div class="contact-form">
-                    <input type="text" placeholder="Name" />
-                    <input type="email" placeholder="Email" />
-                    <textarea rows="4" placeholder="Message"></textarea>
-                    <button>Send Message</button>
-                  </div>
-                  <div>
-                    <h3>Contact Information</h3>
-                    <p>📍 ${component.content.address}</p>
-                    <p>📧 ${component.content.email}</p>
-                    <p>📞 ${component.content.phone}</p>
-                  </div>
-                </div>
-              </div>
-            `;
-
-            case 'pricing':
-              return `
-              <div style="padding: 60px 20px;">
-                <h2 style="text-align: center; margin-bottom: 48px;">${component.content.title}</h2>
-                <div class="pricing-grid">
-                  ${component.content.plans
-                    .map(
-                      (plan) => `
-                    <div class="pricing-card">
-                      <h3>${plan.name}</h3>
-                      <div class="pricing-price">${plan.price}</div>
-                      <ul style="list-style: none; margin: 20px 0;">
-                        ${plan.features.map((feature) => `<li>✓ ${feature}</li>`).join('')}
-                      </ul>
-                      <button>Choose Plan</button>
-                    </div>
-                  `
-                    )
-                    .join('')}
-                </div>
-              </div>
-            `;
-            case 'colors':
-              return `<div class="colors-grid">${component.content.colors.map((color) => `<div class="color-item" style="background-color: ${color};"></div>`).join('')}</div>`;
-            default:
-              return '';
-          }
-        })
-        .join('\n');
-    };
-
-    const htmlCode = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${currentProject?.name || 'My Website'}</title>
-  ${generateStyles()}
-</head>
-<body>
-  <div class="container">
-    ${generateTextElements()}
-    ${generateImageElements()}
-    ${generateComponents()}
-  </div>
-</body>
-</html>`;
-
-    setGeneratedCode(htmlCode);
+  const generateThumbnailDataUrl = (styles) => {
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = 600;
+      canvas.height = 340;
+      const ctx = canvas.getContext('2d');
+      if (!CanvasRenderingContext2D.prototype.roundRect) {
+        CanvasRenderingContext2D.prototype.roundRect = function (x, y, w, h, r) {
+          if (w < 2 * r) r = w / 2;
+          if (h < 2 * r) r = h / 2;
+          this.moveTo(x + r, y);
+          this.lineTo(x + w - r, y);
+          this.quadraticCurveTo(x + w, y, x + w, y + r);
+          this.lineTo(x + w, y + h - r);
+          this.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+          this.lineTo(x + r, y + h);
+          this.quadraticCurveTo(x, y + h, x, y + h - r);
+          this.lineTo(x, y + r);
+          this.quadraticCurveTo(x, y, x + r, y);
+          return this;
+        };
+      }
+      ctx.fillStyle = styles.backgroundColor || '#080C14';
+      ctx.fillRect(0, 0, 600, 340);
+      const grad = ctx.createLinearGradient(0, 0, 600, 180);
+      grad.addColorStop(0, styles.primaryColor || '#4F6EF7');
+      grad.addColorStop(1, styles.secondaryColor || '#2DBCB6');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.roundRect(20, 20, 560, 160, 12);
+      ctx.fill();
+      ctx.fillStyle = styles.headingColor || '#FFFFFF';
+      ctx.globalAlpha = 0.9;
+      ctx.beginPath();
+      ctx.roundRect(120, 65, 360, 18, 4);
+      ctx.fill();
+      ctx.globalAlpha = 0.55;
+      ctx.beginPath();
+      ctx.roundRect(170, 95, 260, 10, 3);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#FFFFFF';
+      ctx.beginPath();
+      ctx.roundRect(240, 122, 120, 32, 8);
+      ctx.fill();
+      const cardColors = [styles.primaryColor, styles.secondaryColor, styles.accentColor];
+      [0, 1, 2].forEach((i) => {
+        ctx.globalAlpha = 0.12;
+        ctx.fillStyle = cardColors[i] || '#4F6EF7';
+        ctx.beginPath();
+        ctx.roundRect(20 + i * 194, 200, 174, 120, 10);
+        ctx.fill();
+        ctx.globalAlpha = 0.7;
+        ctx.fillStyle = cardColors[i] || '#4F6EF7';
+        ctx.beginPath();
+        ctx.roundRect(40 + i * 194, 220, 80, 8, 3);
+        ctx.fill();
+        ctx.globalAlpha = 0.35;
+        ctx.fillStyle = styles.textColor || '#FFFFFF';
+        ctx.beginPath();
+        ctx.roundRect(40 + i * 194, 240, 130, 6, 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.roundRect(40 + i * 194, 254, 100, 6, 2);
+        ctx.fill();
+      });
+      ctx.globalAlpha = 1;
+      return canvas.toDataURL('image/png');
+    } catch (_) {
+      return null;
+    }
   };
 
-  // Load template design when component mounts or currentProject changes
-  useEffect(() => {
-    if (currentProject?.design) {
-      loadTemplateDesign(currentProject.design);
-    } else if (mergedDesign) {
-      initializeFromDesign();
-    } else if (currentProject?.components) {
-      setComponents(currentProject.components);
-      if (currentProject.textElements) {
-        setTextElements(currentProject.textElements);
-      }
-      if (currentProject.imageElements) {
-        setImageElements(currentProject.imageElements);
-      }
-      if (currentProject.uploadedImages) {
-        setUploadedImages(currentProject.uploadedImages);
-      }
-      if (currentProject.styles) {
-        setGlobalStyles(currentProject.styles);
-      }
-    } else {
-      initializeDefaultComponents();
-      initializeDefaultTextElements();
-    }
-  }, [currentProject, mergedDesign]);
+  // ── Theme functions ──
+  const applyColorTheme = (theme) => {
+    setGlobalStyles((prev) => ({
+      ...prev,
+      primaryColor: theme.styles.primaryColor,
+      secondaryColor: theme.styles.secondaryColor,
+      accentColor: theme.styles.accentColor,
+      backgroundColor: theme.styles.backgroundColor,
+      textColor: theme.styles.textColor,
+      headingColor: theme.styles.headingColor,
+      buttonStyle: theme.styles.buttonStyle,
+    }));
+    localStorage.setItem(
+      'selectedDesignColors',
+      JSON.stringify({
+        primaryColor: theme.styles.primaryColor,
+        secondaryColor: theme.styles.secondaryColor,
+        accentColor: theme.styles.accentColor,
+        backgroundColor: theme.styles.backgroundColor,
+        textColor: theme.styles.textColor,
+        headingColor: theme.styles.headingColor,
+      })
+    );
+    localStorage.setItem('currentColorTheme', theme.id);
+    showSnackbar(`${theme.name} theme applied!`, 'success');
+  };
 
-  const initializeDefaultTextElements = () => {
+  const applyColorPalette = (palette) => {
+    setGlobalStyles((prev) => ({
+      ...prev,
+      primaryColor: palette.colors[0],
+      secondaryColor: palette.colors[1],
+      accentColor: palette.colors[2],
+    }));
+    localStorage.setItem(
+      'selectedDesignColors',
+      JSON.stringify({
+        primaryColor: palette.colors[0],
+        secondaryColor: palette.colors[1],
+        accentColor: palette.colors[2],
+        backgroundColor: globalStyles.backgroundColor,
+        textColor: globalStyles.textColor,
+        headingColor: globalStyles.headingColor,
+      })
+    );
+    showSnackbar(`${palette.name} palette applied`, 'success');
+  };
+
+  const showSnackbar = (message, severity = 'success') =>
+    setSnackbar({ open: true, message, severity });
+
+  // ── Initialize ──
+  const initializeDefaultComponents = () =>
+    setComponents([
+      {
+        id: 'hero-1',
+        type: 'hero',
+        content: {
+          title: 'Welcome to Your Website',
+          subtitle: 'Create something amazing with our drag-and-drop editor',
+          buttonText: 'Get Started',
+          image: null,
+        },
+        styles: { textAlign: 'center', padding: '80px 0' },
+      },
+    ]);
+
+  const initializeDefaultTextElements = () =>
     setTextElements([
       {
         id: 'text-1',
@@ -1878,12 +2315,19 @@ const DesignStudio = ({
         position: { x: 50, y: 180 },
       },
     ]);
+
+  const initializeFromDesign = () => {
+    if (mergedDesign?.components) setComponents(mergedDesign.components);
+    if (mergedDesign?.textElements) setTextElements(mergedDesign.textElements);
+    if (mergedDesign?.imageElements) setImageElements(mergedDesign.imageElements);
+    if (mergedDesign?.uploadedImages) setUploadedImages(mergedDesign.uploadedImages);
+    if (mergedDesign?.styles) setGlobalStyles({ ...globalStyles, ...mergedDesign.styles });
   };
 
+  // ── Template loading ──
   const loadTemplateDesign = (designName) => {
     const templateStyles = getTemplateStyles(designName);
     setGlobalStyles((prev) => ({ ...prev, ...templateStyles }));
-
     localStorage.setItem(
       'selectedDesignColors',
       JSON.stringify({
@@ -1895,10 +2339,8 @@ const DesignStudio = ({
         headingColor: templateStyles.headingColor,
       })
     );
-
     const templateComponents = getTemplateComponents(designName);
     setComponents(templateComponents);
-
     const defaultTexts = [
       {
         id: Date.now().toString(),
@@ -1934,7 +2376,6 @@ const DesignStudio = ({
       },
     ];
     setTextElements(defaultTexts);
-
     addToHistory(
       templateComponents,
       { ...globalStyles, ...templateStyles },
@@ -1988,51 +2429,22 @@ const DesignStudio = ({
         heroTitle: 'Shop Modern',
         heroSubtitle: 'Discover the latest trends',
       },
-      EduSmart: {
-        primaryColor: '#4A5D73',
-        secondaryColor: '#7F8C8D',
-        accentColor: '#3498DB',
-        backgroundColor: '#F8F9FA',
-        textColor: '#2C3E50',
-        headingColor: '#2C3E50',
-        borderRadius: '12px',
-        spacing: '28px',
-        fontFamily: 'Montserrat, sans-serif',
-        buttonStyle: 'rounded',
-        heroTitle: 'Learn Something New Today',
-        heroSubtitle: 'Access quality education from anywhere',
-      },
-      'Foodie Delight': {
-        primaryColor: '#7B3E19',
-        secondaryColor: '#E67E22',
-        accentColor: '#F1C40F',
-        backgroundColor: '#FFF9F5',
-        textColor: '#4A2C1A',
-        headingColor: '#7B3E19',
-        borderRadius: '16px',
-        spacing: '36px',
-        fontFamily: 'Playfair Display, serif',
-        buttonStyle: 'rounded',
-        heroTitle: 'Delicious Food Awaits',
-        heroSubtitle: 'Experience culinary excellence',
-      },
-      'Tech Startup': {
-        primaryColor: '#283655',
-        secondaryColor: '#4D648D',
-        accentColor: '#1E81B0',
-        backgroundColor: '#0A0F1A',
-        textColor: '#E0E0E0',
+      default: {
+        primaryColor: G_START,
+        secondaryColor: G_MID,
+        accentColor: G_END,
+        backgroundColor: '#080C14',
+        textColor: '#FFFFFF',
         headingColor: '#FFFFFF',
-        borderRadius: '8px',
-        spacing: '32px',
-        fontFamily: 'Space Grotesk, sans-serif',
-        buttonStyle: 'square',
-        heroTitle: 'Innovation Meets Technology',
-        heroSubtitle: 'Build the future with us',
+        borderRadius: '12px',
+        spacing: '24px',
+        fontFamily: 'Inter, sans-serif',
+        buttonStyle: 'rounded',
+        heroTitle: 'Welcome to Your Website',
+        heroSubtitle: 'Create something amazing',
       },
     };
-
-    return styles[designName] || styles['Modern Minimalist'];
+    return styles[designName] || styles.default;
   };
 
   const getTemplateComponents = (designName) => {
@@ -2058,19 +2470,16 @@ const DesignStudio = ({
               {
                 title: 'Clean Design',
                 description: 'Minimalist approach for maximum impact',
-                icon: 'brush',
                 image: null,
               },
               {
                 title: 'Fast Performance',
                 description: 'Optimized for speed and efficiency',
-                icon: 'speed',
                 image: null,
               },
               {
                 title: 'Responsive Layout',
                 description: 'Looks great on all devices',
-                icon: 'mobile',
                 image: null,
               },
             ],
@@ -2148,44 +2557,10 @@ const DesignStudio = ({
         },
       ],
     };
-
     return componentsMap[designName] || componentsMap.default;
   };
 
-  const initializeDefaultComponents = () => {
-    setComponents([
-      {
-        id: 'hero-1',
-        type: 'hero',
-        content: {
-          title: 'Welcome to Your Website',
-          subtitle: 'Create something amazing with our drag-and-drop editor',
-          buttonText: 'Get Started',
-          image: null,
-        },
-        styles: { textAlign: 'center', padding: '80px 0' },
-      },
-    ]);
-  };
-
-  const initializeFromDesign = () => {
-    if (mergedDesign?.components) {
-      setComponents(mergedDesign.components);
-    }
-    if (mergedDesign?.textElements) {
-      setTextElements(mergedDesign.textElements);
-    }
-    if (mergedDesign?.imageElements) {
-      setImageElements(mergedDesign.imageElements);
-    }
-    if (mergedDesign?.uploadedImages) {
-      setUploadedImages(mergedDesign.uploadedImages);
-    }
-    if (mergedDesign?.styles) {
-      setGlobalStyles({ ...globalStyles, ...mergedDesign.styles });
-    }
-  };
-
+  // ── History ──
   const addToHistory = (
     newComponents,
     newStyles,
@@ -2231,10 +2606,10 @@ const DesignStudio = ({
     }
   };
 
+  // ── Style change ──
   const handleStyleChange = (property, value) => {
     const newStyles = { ...globalStyles, [property]: value };
     setGlobalStyles(newStyles);
-
     if (
       [
         'primaryColor',
@@ -2257,35 +2632,275 @@ const DesignStudio = ({
         })
       );
     }
-
     addToHistory(components, newStyles, textElements, imageElements, uploadedImages);
-    showSnackbar(`${property} updated`, 'success');
   };
 
-  // Image Upload Functions
-  const handleImageUpload = (event) => {
-    const files = Array.from(event.target.files);
-    processImages(files);
+  // ── Component functions ──
+  const getDefaultContent = (type) => {
+    switch (type) {
+      case 'hero':
+        return {
+          title: 'New Hero Section',
+          subtitle: 'Add your compelling message here',
+          buttonText: 'Learn More',
+          image: null,
+        };
+      case 'features':
+        return {
+          title: 'Features',
+          items: [
+            { title: 'Feature 1', description: 'Description of feature 1', image: null },
+            { title: 'Feature 2', description: 'Description of feature 2', image: null },
+            { title: 'Feature 3', description: 'Description of feature 3', image: null },
+          ],
+        };
+      case 'gallery':
+        return {
+          title: 'Gallery',
+          items: [
+            { title: 'Project 1', description: 'Project description', image: null },
+            { title: 'Project 2', description: 'Project description', image: null },
+            { title: 'Project 3', description: 'Project description', image: null },
+          ],
+        };
+      case 'contact':
+        return {
+          title: 'Contact Us',
+          formFields: ['name', 'email', 'message'],
+          address: '123 Business St, City, Country',
+          email: 'info@example.com',
+          phone: '+1 234 567 890',
+        };
+      case 'pricing':
+        return {
+          title: 'Pricing Plans',
+          plans: [
+            { name: 'Basic', price: '$29', features: ['Feature 1', 'Feature 2'] },
+            { name: 'Pro', price: '$79', features: ['Feature 1', 'Feature 2', 'Feature 3'] },
+            { name: 'Enterprise', price: '$199', features: ['All features', 'Priority support'] },
+          ],
+        };
+      case 'logo':
+        return {
+          text: 'Your Logo',
+          image: null,
+          link: '/',
+          alignment: 'left',
+          size: 'medium',
+          tagline: '',
+        };
+      case 'footer':
+        return {
+          companyName: 'Your Company',
+          tagline: 'Building amazing websites',
+          links: [
+            { label: 'Home', url: '/' },
+            { label: 'About', url: '/about' },
+            { label: 'Services', url: '/services' },
+            { label: 'Contact', url: '/contact' },
+          ],
+          socialLinks: [
+            { platform: 'Facebook', url: '#' },
+            { platform: 'Twitter', url: '#' },
+            { platform: 'Instagram', url: '#' },
+            { platform: 'LinkedIn', url: '#' },
+          ],
+          copyright: '© 2024 Your Company. All rights reserved.',
+          columns: 4,
+          showNewsletter: true,
+        };
+      default:
+        return { text: 'New Section' };
+    }
   };
 
-  const handleDragOver = (e) => {
-    e.preventDefault();
-    setDragOver(true);
+  const getComponentIcon = (type) => {
+    switch (type) {
+      case 'hero':
+        return <ImageIcon />;
+      case 'features':
+        return <GridOn />;
+      case 'gallery':
+        return <PhotoLibrary />;
+      case 'contact':
+        return <ContactMail />;
+      case 'pricing':
+        return <ShoppingCart />;
+      case 'logo':
+        return <ImageIcon />;
+      case 'footer':
+        return <ViewQuilt />;
+      default:
+        return <TextFields />;
+    }
   };
 
-  const handleDragLeave = (e) => {
-    e.preventDefault();
-    setDragOver(false);
+  const getComponentName = (type) => type.charAt(0).toUpperCase() + type.slice(1);
+
+  const handleAddComponent = (type) => {
+    const newComponent = {
+      id: Date.now().toString(),
+      type,
+      content: getDefaultContent(type),
+      styles: {},
+      position: components.length,
+    };
+    const newComponents = [...components, newComponent];
+    setComponents(newComponents);
+    addToHistory(newComponents, globalStyles, textElements, imageElements, uploadedImages);
+    showSnackbar(`${type} component added`, 'success');
   };
 
-  const handleDrop = (e) => {
-    e.preventDefault();
-    setDragOver(false);
-    const files = Array.from(e.dataTransfer.files);
-    const imageFiles = files.filter((file) => file.type.startsWith('image/'));
-    processImages(imageFiles);
+  const handleUpdateComponent = (id, updates) => {
+    const newComponents = components.map((comp) =>
+      comp.id === id ? { ...comp, ...updates } : comp
+    );
+    setComponents(newComponents);
+    addToHistory(newComponents, globalStyles, textElements, imageElements, uploadedImages);
   };
 
+  const handleDeleteComponent = (id) => {
+    const newComponents = components.filter((comp) => comp.id !== id);
+    setComponents(newComponents);
+    addToHistory(newComponents, globalStyles, textElements, imageElements, uploadedImages);
+    if (selectedComponent?.id === id) setSelectedComponent(null);
+    showSnackbar('Component deleted', 'info');
+  };
+
+  const handleUpdateComponentContent = (componentId, field, value, itemIndex = null) => {
+    const component = components.find((c) => c.id === componentId);
+    if (!component) return;
+    let updatedContent = { ...component.content };
+    if (itemIndex !== null && component.type === 'features' && component.content.items) {
+      const updatedItems = [...component.content.items];
+      updatedItems[itemIndex] = { ...updatedItems[itemIndex], [field]: value };
+      updatedContent.items = updatedItems;
+    } else if (itemIndex !== null && component.type === 'gallery' && component.content.items) {
+      const updatedItems = [...component.content.items];
+      updatedItems[itemIndex] = { ...updatedItems[itemIndex], [field]: value };
+      updatedContent.items = updatedItems;
+    } else if (itemIndex !== null && component.type === 'pricing' && component.content.plans) {
+      const updatedPlans = [...component.content.plans];
+      updatedPlans[itemIndex] = { ...updatedPlans[itemIndex], [field]: value };
+      updatedContent.plans = updatedPlans;
+    } else if (component.type === 'logo') {
+      updatedContent[field] = value;
+    } else if (component.type === 'footer') {
+      if (field === 'links' || field === 'socialLinks') updatedContent[field] = value;
+      else updatedContent[field] = value;
+    } else {
+      updatedContent[field] = value;
+    }
+    handleUpdateComponent(componentId, { content: updatedContent });
+  };
+
+  const handleAddComponentItem = (componentId, type) => {
+    const component = components.find((c) => c.id === componentId);
+    if (!component) return;
+    let updatedContent = { ...component.content };
+    const newItem = { title: 'New Item', description: 'Description', image: null };
+    if (component.type === 'features' && updatedContent.items)
+      updatedContent.items = [...updatedContent.items, newItem];
+    else if (component.type === 'gallery' && updatedContent.items)
+      updatedContent.items = [...updatedContent.items, newItem];
+    else if (component.type === 'pricing' && updatedContent.plans)
+      updatedContent.plans = [
+        ...updatedContent.plans,
+        { name: 'New Plan', price: '$0', features: ['Feature 1'] },
+      ];
+    else if (component.type === 'footer') {
+      if (type === 'link')
+        updatedContent.links = [...(updatedContent.links || []), { label: 'New Link', url: '#' }];
+      else if (type === 'social')
+        updatedContent.socialLinks = [
+          ...(updatedContent.socialLinks || []),
+          { platform: 'Social', url: '#' },
+        ];
+    }
+    handleUpdateComponent(componentId, { content: updatedContent });
+    showSnackbar('New item added', 'success');
+  };
+
+  const handleDeleteComponentItem = (componentId, type, index) => {
+    const component = components.find((c) => c.id === componentId);
+    if (!component) return;
+    let updatedContent = { ...component.content };
+    if (type === 'feature' && updatedContent.items)
+      updatedContent.items = updatedContent.items.filter((_, i) => i !== index);
+    else if (type === 'gallery' && updatedContent.items)
+      updatedContent.items = updatedContent.items.filter((_, i) => i !== index);
+    else if (type === 'plan' && updatedContent.plans)
+      updatedContent.plans = updatedContent.plans.filter((_, i) => i !== index);
+    else if (type === 'link' && updatedContent.links)
+      updatedContent.links = updatedContent.links.filter((_, i) => i !== index);
+    else if (type === 'social' && updatedContent.socialLinks)
+      updatedContent.socialLinks = updatedContent.socialLinks.filter((_, i) => i !== index);
+    handleUpdateComponent(componentId, { content: updatedContent });
+    showSnackbar('Item deleted', 'info');
+  };
+
+  // ── Text element functions ──
+  const handleAddTextElement = (textStyle) => {
+    const newTextElement = {
+      id: Date.now().toString(),
+      type: 'text',
+      tag: textStyle.tag,
+      content: textStyle.defaultText,
+      styles: {
+        fontSize: textStyle.fontSize,
+        fontWeight: textStyle.fontWeight,
+        color: globalStyles.textColor,
+        textAlign: 'center',
+        margin: '10px 0',
+        fontFamily: globalStyles.fontFamily,
+        ...(textStyle.tag === 'a' && { textDecoration: 'underline', cursor: 'pointer' }),
+        ...(textStyle.isNav && {
+          display: 'flex',
+          gap: '24px',
+          justifyContent: 'center',
+          alignItems: 'center',
+          padding: '12px 0',
+          flexWrap: 'wrap',
+        }),
+      },
+      position: { x: 50, y: Math.random() * 300 + 100 },
+      href: textStyle.href,
+      isNav: textStyle.isNav || false,
+    };
+    const newTextElements = [...textElements, newTextElement];
+    setTextElements(newTextElements);
+    addToHistory(components, globalStyles, newTextElements, imageElements, uploadedImages);
+    showSnackbar(`${textStyle.name} added to canvas`, 'success');
+  };
+
+  const handleUpdateTextElement = (id, updates) => {
+    const newTextElements = textElements.map((el) => (el.id === id ? { ...el, ...updates } : el));
+    setTextElements(newTextElements);
+    addToHistory(components, globalStyles, newTextElements, imageElements, uploadedImages);
+  };
+
+  const handleDeleteTextElement = (id) => {
+    const newTextElements = textElements.filter((el) => el.id !== id);
+    setTextElements(newTextElements);
+    addToHistory(components, globalStyles, newTextElements, imageElements, uploadedImages);
+    if (selectedTextElement?.id === id) setSelectedTextElement(null);
+    showSnackbar('Element deleted', 'info');
+  };
+
+  const handleTextStyleChange = (id, property, value) => {
+    const element = textElements.find((el) => el.id === id);
+    if (element) handleUpdateTextElement(id, { styles: { ...element.styles, [property]: value } });
+  };
+
+  const handleTextPositionChange = (id, x, y) => {
+    const element = [...textElements, ...imageElements].find((el) => el.id === id);
+    if (element) {
+      if (element.type === 'text') handleUpdateTextElement(id, { position: { x, y } });
+      else handleUpdateImageElement(id, { position: { x, y } });
+    }
+  };
+
+  // ── Image functions ──
   const processImages = (files) => {
     files.forEach((file) => {
       const reader = new FileReader();
@@ -2301,7 +2916,6 @@ const DesignStudio = ({
           height: 0,
           dateAdded: new Date().toISOString(),
         };
-
         const img = new Image();
         img.onload = () => {
           newImage.width = img.width;
@@ -2319,7 +2933,49 @@ const DesignStudio = ({
     showSnackbar(`${files.length} image(s) uploaded successfully`, 'success');
   };
 
-  // Add image to canvas as standalone element
+  const handleImageUpload = (event) => {
+    const files = Array.from(event.target.files);
+    processImages(files);
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    setDragOver(true);
+  };
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+  };
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+    const files = Array.from(e.dataTransfer.files);
+    const imageFiles = files.filter((file) => file.type.startsWith('image/'));
+    processImages(imageFiles);
+  };
+
+  const handleAddMockImage = () => {
+    const url = mockImageUrl.trim();
+    if (!url) {
+      showSnackbar('Please enter an image URL', 'warning');
+      return;
+    }
+    const newImage = {
+      id: Date.now() + Math.random().toString(36).substr(2, 9),
+      url,
+      name: `mock-${Date.now()}.jpg`,
+      size: 0,
+      type: 'image/jpeg',
+      width: 800,
+      height: 600,
+      dateAdded: new Date().toISOString(),
+      isMock: true,
+    };
+    setUploadedImages((prev) => [...prev, newImage]);
+    setMockImageUrl('');
+    showSnackbar('Mock image added to library', 'success');
+  };
+
   const handleAddImageToCanvas = (image, imageStyle = null) => {
     const styleToUse = imageStyle || imageStyles[0];
     const newImageElement = {
@@ -2357,42 +3013,31 @@ const DesignStudio = ({
     showSnackbar('Image added to canvas', 'success');
   };
 
-  // Add image to component (hero, feature, etc.)
-  const handleAddImageToComponent = (image, componentId, itemIndex = null) => {
-    const updatedComponents = components.map((comp) => {
-      if (comp.id === componentId) {
-        if (comp.type === 'hero') {
-          return {
-            ...comp,
-            content: { ...comp.content, image: image.url },
-          };
-        } else if (comp.type === 'features' && itemIndex !== null) {
-          const updatedItems = [...comp.content.items];
-          updatedItems[itemIndex] = { ...updatedItems[itemIndex], image: image.url };
-          return {
-            ...comp,
-            content: { ...comp.content, items: updatedItems },
-          };
-        } else if (comp.type === 'gallery' && itemIndex !== null) {
-          const updatedItems = [...comp.content.items];
-          updatedItems[itemIndex] = { ...updatedItems[itemIndex], image: image.url };
-          return {
-            ...comp,
-            content: { ...comp.content, items: updatedItems },
-          };
-        }
-      }
-      return comp;
-    });
-    setComponents(updatedComponents);
-    addToHistory(updatedComponents, globalStyles, textElements, imageElements, uploadedImages);
-    showSnackbar('Image added to component', 'success');
-  };
-
   const handleUpdateImageElement = (id, updates) => {
     const newImageElements = imageElements.map((el) => (el.id === id ? { ...el, ...updates } : el));
     setImageElements(newImageElements);
     addToHistory(components, globalStyles, textElements, newImageElements, uploadedImages);
+  };
+
+  const handleReplaceImage = (id, file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const result = e.target.result;
+      handleUpdateImageElement(id, { imageUrl: result });
+      const newUploadedImage = {
+        id: Date.now() + Math.random().toString(36).substr(2, 9),
+        url: result,
+        name: file.name,
+        size: file.size,
+        type: file.type,
+        dateAdded: new Date().toISOString(),
+      };
+      setUploadedImages((prev) => [...prev, newUploadedImage]);
+      showSnackbar('Image replaced', 'success');
+    };
+    reader.onerror = () => showSnackbar('Failed to replace image', 'error');
+    reader.readAsDataURL(file);
   };
 
   const handleDeleteImageElement = (id) => {
@@ -2405,7 +3050,6 @@ const DesignStudio = ({
 
   const handleDeleteUploadedImage = (imageId) => {
     setUploadedImages(uploadedImages.filter((img) => img.id !== imageId));
-    // Also remove any image elements that use this image
     const newImageElements = imageElements.filter((el) => el.imageId !== imageId);
     setImageElements(newImageElements);
     addToHistory(
@@ -2420,17 +3064,12 @@ const DesignStudio = ({
 
   const handleResizeImage = (id, newWidth, newHeight) => {
     const imageElement = imageElements.find((el) => el.id === id);
-    if (imageElement) {
+    if (imageElement)
       handleUpdateImageElement(id, {
         width: newWidth,
         height: newHeight,
-        styles: {
-          ...imageElement.styles,
-          width: newWidth,
-          height: newHeight,
-        },
+        styles: { ...imageElement.styles, width: newWidth, height: newHeight },
       });
-    }
   };
 
   const handleApplyImageStyle = (id, style) => {
@@ -2458,13 +3097,9 @@ const DesignStudio = ({
     if (imageElement) {
       const newFilters = { ...imageElement.filters, [filterType]: value };
       const filterString = `brightness(${newFilters.brightness}%) contrast(${newFilters.contrast}%) saturate(${newFilters.saturate}%) blur(${newFilters.blur}px) grayscale(${newFilters.grayscale}%) sepia(${newFilters.sepia}%) hue-rotate(${newFilters.hueRotate}deg)`;
-
       handleUpdateImageElement(id, {
         filters: newFilters,
-        styles: {
-          ...imageElement.styles,
-          filter: filterString,
-        },
+        styles: { ...imageElement.styles, filter: filterString },
       });
     }
   };
@@ -2476,10 +3111,7 @@ const DesignStudio = ({
       const newRotate = currentRotate + degrees;
       handleUpdateImageElement(id, {
         rotate: newRotate,
-        styles: {
-          ...imageElement.styles,
-          transform: `rotate(${newRotate}deg)`,
-        },
+        styles: { ...imageElement.styles, transform: `rotate(${newRotate}deg)` },
       });
     }
   };
@@ -2490,360 +3122,52 @@ const DesignStudio = ({
       const currentFlip = imageElement.flip || { horizontal: false, vertical: false };
       const newFlip = { ...currentFlip, [direction]: !currentFlip[direction] };
       const transform = `scaleX(${newFlip.horizontal ? -1 : 1}) scaleY(${newFlip.vertical ? -1 : 1}) rotate(${imageElement.rotate || 0}deg)`;
-
       handleUpdateImageElement(id, {
         flip: newFlip,
-        styles: {
-          ...imageElement.styles,
-          transform: transform,
-        },
+        styles: { ...imageElement.styles, transform },
       });
     }
   };
 
-  const handleTextPositionChange = (id, x, y) => {
-    const element = [...textElements, ...imageElements].find((el) => el.id === id);
-    if (element) {
-      if (element.type === 'text') {
-        handleUpdateTextElement(id, { position: { x, y } });
-      } else {
-        handleUpdateImageElement(id, { position: { x, y } });
+  const handleAddImageToComponent = (image, componentId, itemIndex = null) => {
+    const updatedComponents = components.map((comp) => {
+      if (comp.id === componentId) {
+        if (comp.type === 'hero')
+          return { ...comp, content: { ...comp.content, image: image.url } };
+        if (comp.type === 'logo')
+          return { ...comp, content: { ...comp.content, image: image.url } };
+        if (comp.type === 'features' && itemIndex !== null) {
+          const updatedItems = [...comp.content.items];
+          updatedItems[itemIndex] = { ...updatedItems[itemIndex], image: image.url };
+          return { ...comp, content: { ...comp.content, items: updatedItems } };
+        }
+        if (comp.type === 'gallery' && itemIndex !== null) {
+          const updatedItems = [...comp.content.items];
+          updatedItems[itemIndex] = { ...updatedItems[itemIndex], image: image.url };
+          return { ...comp, content: { ...comp.content, items: updatedItems } };
+        }
       }
-    }
+      return comp;
+    });
+    setComponents(updatedComponents);
+    addToHistory(updatedComponents, globalStyles, textElements, imageElements, uploadedImages);
+    showSnackbar('Image added to component', 'success');
   };
 
-  const handleUpdateTextElement = (id, updates) => {
-    const newTextElements = textElements.map((el) => (el.id === id ? { ...el, ...updates } : el));
-    setTextElements(newTextElements);
-    addToHistory(components, globalStyles, newTextElements, imageElements, uploadedImages);
-  };
-
-  const handleDeleteTextElement = (id) => {
-    const newTextElements = textElements.filter((el) => el.id !== id);
-    setTextElements(newTextElements);
-    addToHistory(components, globalStyles, newTextElements, imageElements, uploadedImages);
-    if (selectedTextElement?.id === id) setSelectedTextElement(null);
-    showSnackbar('Element deleted', 'info');
-  };
-
-  const handleTextStyleChange = (id, property, value) => {
-    const element = textElements.find((el) => el.id === id);
-    if (element) {
-      handleUpdateTextElement(id, {
-        styles: { ...element.styles, [property]: value },
-      });
-    }
-  };
-
-  const handleAddTextElement = (textStyle) => {
-    const newTextElement = {
-      id: Date.now().toString(),
-      type: 'text',
-      tag: textStyle.tag,
-      content: textStyle.defaultText,
-      styles: {
-        fontSize: textStyle.fontSize,
-        fontWeight: textStyle.fontWeight,
-        color: globalStyles.textColor,
-        textAlign: 'center',
-        margin: '10px 0',
-        fontFamily: globalStyles.fontFamily,
-        ...(textStyle.tag === 'a' && { textDecoration: 'underline', cursor: 'pointer' }),
-      },
-      position: { x: 50, y: Math.random() * 300 + 100 },
-      href: textStyle.href,
-    };
-    const newTextElements = [...textElements, newTextElement];
-    setTextElements(newTextElements);
-    addToHistory(components, globalStyles, newTextElements, imageElements, uploadedImages);
-    showSnackbar(`${textStyle.name} added to canvas`, 'success');
-  };
-
-  const handleUpdateComponent = (id, updates) => {
-    const newComponents = components.map((comp) =>
-      comp.id === id ? { ...comp, ...updates } : comp
-    );
-    setComponents(newComponents);
-    addToHistory(newComponents, globalStyles, textElements, imageElements, uploadedImages);
-  };
-
-  const handleDeleteComponent = (id) => {
-    const newComponents = components.filter((comp) => comp.id !== id);
-    setComponents(newComponents);
-    addToHistory(newComponents, globalStyles, textElements, imageElements, uploadedImages);
-    if (selectedComponent?.id === id) setSelectedComponent(null);
-    showSnackbar('Component deleted', 'info');
-  };
-
-  const handleAddComponent = (type) => {
-    const newComponent = {
-      id: Date.now().toString(),
-      type: type,
-      content: getDefaultContent(type),
-      styles: {},
-      position: components.length,
-    };
-    const newComponents = [...components, newComponent];
-    setComponents(newComponents);
-    addToHistory(newComponents, globalStyles, textElements, imageElements, uploadedImages);
-    showSnackbar(`${type} component added`, 'success');
-  };
-
-  const getDefaultContent = (type) => {
-    switch (type) {
-      case 'hero':
-        return {
-          title: 'New Hero Section',
-          subtitle: 'Add your compelling message here',
-          buttonText: 'Learn More',
-          image: null,
-        };
-      case 'features':
-        return {
-          title: 'Features',
-          items: [
-            {
-              title: 'Feature 1',
-              description: 'Description of feature 1',
-              icon: 'star',
-              image: null,
-            },
-            {
-              title: 'Feature 2',
-              description: 'Description of feature 2',
-              icon: 'star',
-              image: null,
-            },
-            {
-              title: 'Feature 3',
-              description: 'Description of feature 3',
-              icon: 'star',
-              image: null,
-            },
-          ],
-        };
-      case 'gallery':
-        return {
-          title: 'Gallery',
-          items: [
-            { title: 'Project 1', image: null, description: 'Project description' },
-            { title: 'Project 2', image: null, description: 'Project description' },
-            { title: 'Project 3', image: null, description: 'Project description' },
-          ],
-        };
-      case 'contact':
-        return {
-          title: 'Contact Us',
-          formFields: ['name', 'email', 'message'],
-          address: '123 Business St, City, Country',
-          email: 'info@example.com',
-          phone: '+1 234 567 890',
-        };
-      case 'pricing':
-        return {
-          title: 'Pricing Plans',
-          plans: [
-            { name: 'Basic', price: '$29', features: ['Feature 1', 'Feature 2'] },
-            { name: 'Pro', price: '$79', features: ['Feature 1', 'Feature 2', 'Feature 3'] },
-            { name: 'Enterprise', price: '$199', features: ['All features', 'Priority support'] },
-          ],
-        };
-      case 'colors':
-        return {
-          activeTab: 3,
-        };
-      default:
-        return { text: 'New Section' };
-    }
-  };
-
-  const handleUpdateComponentContent = (componentId, field, value, itemIndex = null) => {
-    const component = components.find((c) => c.id === componentId);
-    if (!component) return;
-
-    let updatedContent = { ...component.content };
-
-    if (itemIndex !== null && component.type === 'features' && component.content.items) {
-      const updatedItems = [...component.content.items];
-      updatedItems[itemIndex] = { ...updatedItems[itemIndex], [field]: value };
-      updatedContent.items = updatedItems;
-    } else if (itemIndex !== null && component.type === 'gallery' && component.content.items) {
-      const updatedItems = [...component.content.items];
-      updatedItems[itemIndex] = { ...updatedItems[itemIndex], [field]: value };
-      updatedContent.items = updatedItems;
-    } else if (itemIndex !== null && component.type === 'pricing' && component.content.plans) {
-      const updatedPlans = [...component.content.plans];
-      updatedPlans[itemIndex] = { ...updatedPlans[itemIndex], [field]: value };
-      updatedContent.plans = updatedPlans;
-    } else {
-      updatedContent[field] = value;
-    }
-
-    handleUpdateComponent(componentId, { content: updatedContent });
-  };
-
-  const handleAddComponentItem = (componentId, type) => {
-    const component = components.find((c) => c.id === componentId);
-    if (!component) return;
-
-    let updatedContent = { ...component.content };
-    const newItem = getNewItemByType(type);
-
-    if (component.type === 'features' && updatedContent.items) {
-      updatedContent.items = [...updatedContent.items, newItem];
-    } else if (component.type === 'gallery' && updatedContent.items) {
-      updatedContent.items = [...updatedContent.items, newItem];
-    } else if (component.type === 'pricing' && updatedContent.plans) {
-      updatedContent.plans = [...updatedContent.plans, newItem];
-    }
-
-    handleUpdateComponent(componentId, { content: updatedContent });
-    showSnackbar(`New ${type} item added`, 'success');
-  };
-
-  const getNewItemByType = (type) => {
-    switch (type) {
-      case 'feature':
-        return {
-          title: 'New Feature',
-          description: 'Feature description',
-          icon: 'star',
-          image: null,
-        };
-      case 'gallery':
-        return { title: 'New Project', description: 'Project description', image: null };
-      case 'plan':
-        return { name: 'New Plan', price: '$0', features: ['Feature 1'] };
-      default:
-        return {};
-    }
-  };
-
-  const handleDeleteComponentItem = (componentId, type, index) => {
-    const component = components.find((c) => c.id === componentId);
-    if (!component) return;
-
-    let updatedContent = { ...component.content };
-
-    if (type === 'feature' && updatedContent.items) {
-      updatedContent.items = updatedContent.items.filter((_, i) => i !== index);
-    } else if (type === 'gallery' && updatedContent.items) {
-      updatedContent.items = updatedContent.items.filter((_, i) => i !== index);
-    } else if (type === 'plan' && updatedContent.plans) {
-      updatedContent.plans = updatedContent.plans.filter((_, i) => i !== index);
-    }
-
-    handleUpdateComponent(componentId, { content: updatedContent });
-    showSnackbar('Item deleted', 'info');
-  };
-
-  // Opens save modal — actual save happens in handleSaveConfirm
+  // ── Save and Publish ──
   const handleSave = () => {
     setProjectNameInput(currentProject?.name || savedProjectCard?.name || 'Untitled Project');
     setSaveModalOpen(true);
   };
 
-  // Generate a visual thumbnail colour strip from globalStyles
-  const generateThumbnailDataUrl = (styles) => {
-    try {
-      const canvas = document.createElement('canvas');
-      canvas.width = 600;
-      canvas.height = 340;
-      const ctx = canvas.getContext('2d');
-
-      // Add roundRect helper if not available
-      if (!CanvasRenderingContext2D.prototype.roundRect) {
-        CanvasRenderingContext2D.prototype.roundRect = function (x, y, w, h, r) {
-          if (w < 2 * r) r = w / 2;
-          if (h < 2 * r) r = h / 2;
-          this.moveTo(x + r, y);
-          this.lineTo(x + w - r, y);
-          this.quadraticCurveTo(x + w, y, x + w, y + r);
-          this.lineTo(x + w, y + h - r);
-          this.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-          this.lineTo(x + r, y + h);
-          this.quadraticCurveTo(x, y + h, x, y + h - r);
-          this.lineTo(x, y + r);
-          this.quadraticCurveTo(x, y, x + r, y);
-          return this;
-        };
-      }
-
-      // Background
-      ctx.fillStyle = styles.backgroundColor || '#080C14';
-      ctx.fillRect(0, 0, 600, 340);
-
-      // Hero gradient band
-      const grad = ctx.createLinearGradient(0, 0, 600, 180);
-      grad.addColorStop(0, styles.primaryColor || '#4F6EF7');
-      grad.addColorStop(1, styles.secondaryColor || '#2DBCB6');
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.roundRect(20, 20, 560, 160, 12);
-      ctx.fill();
-
-      // Heading mock text bars
-      ctx.fillStyle = styles.headingColor || '#FFFFFF';
-      ctx.globalAlpha = 0.9;
-      ctx.beginPath();
-      ctx.roundRect(120, 65, 360, 18, 4);
-      ctx.fill();
-      ctx.globalAlpha = 0.55;
-      ctx.beginPath();
-      ctx.roundRect(170, 95, 260, 10, 3);
-      ctx.fill();
-
-      // Button mock
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = '#FFFFFF';
-      ctx.beginPath();
-      ctx.roundRect(240, 122, 120, 32, 8);
-      ctx.fill();
-
-      // Card mocks below
-      const cardColors = [styles.primaryColor, styles.secondaryColor, styles.accentColor];
-      [0, 1, 2].forEach((i) => {
-        ctx.globalAlpha = 0.12;
-        ctx.fillStyle = cardColors[i] || '#4F6EF7';
-        ctx.beginPath();
-        ctx.roundRect(20 + i * 194, 200, 174, 120, 10);
-        ctx.fill();
-        ctx.globalAlpha = 0.7;
-        ctx.fillStyle = cardColors[i] || '#4F6EF7';
-        ctx.beginPath();
-        ctx.roundRect(40 + i * 194, 220, 80, 8, 3);
-        ctx.fill();
-        ctx.globalAlpha = 0.35;
-        ctx.fillStyle = styles.textColor || '#FFFFFF';
-        ctx.beginPath();
-        ctx.roundRect(40 + i * 194, 240, 130, 6, 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.roundRect(40 + i * 194, 254, 100, 6, 2);
-        ctx.fill();
-      });
-
-      ctx.globalAlpha = 1;
-      return canvas.toDataURL('image/png');
-    } catch (_) {
-      return null;
-    }
-  };
-
-  // In DesignStudio.js, replace the handleSaveConfirm function:
-
   const handleSaveConfirm = async () => {
     setSaving(true);
     try {
-      const projectId = currentProject?.id || Date.now().toString();
+      const projectId = currentProject?.id || savedProjectCard?.id || Date.now().toString();
       const projectName = projectNameInput.trim() || 'Untitled Project';
-      const publishSlug = `site-${projectId}-${Math.random().toString(36).slice(2, 8)}`;
-
-      // Flush current canvas into the active page before saving
       const updatedPages = pages.map((p) =>
         p.id === activePageId ? { ...p, components, textElements, imageElements } : p
       );
-
       const projectData = {
         id: projectId,
         name: projectName,
@@ -2856,91 +3180,112 @@ const DesignStudio = ({
         lastEdited: new Date().toISOString(),
         type: currentProject?.type || 'custom',
         status: 'draft',
-        publishSlug,
       };
-
-      // Save to localStorage
-      localStorage.setItem(`project_${projectId}`, JSON.stringify(projectData));
-      localStorage.setItem('latest_project_id', projectId);
-      localStorage.setItem('latest_project_data', JSON.stringify(projectData));
-
-      // Keep a lightweight index for the gallery
-      const indexRaw = localStorage.getItem('projects_index');
-      const index = indexRaw ? JSON.parse(indexRaw) : [];
-      if (!index.includes(projectId)) {
-        index.push(projectId);
-        localStorage.setItem('projects_index', JSON.stringify(index));
-      }
-
-      // Save to database API
-      const token = localStorage.getItem('token');
-      const headers = {
-        'Content-Type': 'application/json',
-      };
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-
-      try {
-        // Check if project exists in database
-        let getResponse;
-        try {
-          getResponse = await axios.get(`/api/projects/${projectId}`, { headers });
-        } catch (e) {
-          // Project doesn't exist
-          getResponse = null;
-        }
-
-        const dbProjectData = {
-          name: projectName,
-          designs: [],
-          customizations: {
-            components: components,
-            textElements: textElements,
-            imageElements: imageElements,
-            uploadedImages: uploadedImages,
-            styles: globalStyles,
-            pages: updatedPages,
-          },
-        };
-
-        if (getResponse?.data) {
-          // Update existing project
-          await axios.put(
-            `/api/projects/${projectId}`,
-            {
-              name: projectName,
-              customizations: dbProjectData.customizations,
-            },
-            { headers }
-          );
-        } else {
-          // Create new project
-          await axios.post('/api/projects', dbProjectData, { headers });
-        }
-      } catch (apiError) {
-        console.warn('API save failed, saved locally only:', apiError.message);
-        // Continue - local save is already done
-      }
-
+      if (token) await saveProjectToDatabase(projectData);
+      saveProjectToLocalStorage(projectData);
       if (setCurrentProject) setCurrentProject(projectData);
       setPages(updatedPages);
-
-      const thumbnail = generateThumbnailDataUrl(globalStyles);
-      setSavedProjectCard({
-        name: projectName,
-        id: projectId,
-        publishSlug,
-        thumbnail,
-        status: 'draft',
-      });
+      setSavedProjectCard({ name: projectName, id: projectId, status: 'draft' });
       setSaveModalOpen(false);
       showSnackbar('Project saved successfully!', 'success');
+      if (token) await loadProjectsFromDatabase();
     } catch (error) {
       console.error('Error saving project:', error);
-      showSnackbar('Error saving project', 'error');
+      showSnackbar('Error saving project. Please try again.', 'error');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handlePublish = async () => {
+    setPublishModalOpen(true);
+    setWebsiteName(currentProject?.name || savedProjectCard?.name || 'My Website');
+    setGeneratedSlug('');
+    setSlugError('');
+  };
+
+  const saveWebsiteToDatabase = async () => {
+    if (!websiteName.trim()) {
+      showSnackbar('Please enter a website name', 'warning');
+      return;
+    }
+    let finalSlug = generatedSlug;
+    if (!finalSlug)
+      finalSlug = websiteName
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+    if (!/^[a-z0-9-]+$/.test(finalSlug)) {
+      setSlugError('Slug can only contain lowercase letters, numbers, and hyphens');
+      return;
+    }
+    if (finalSlug.length < 3 || finalSlug.length > 50) {
+      setSlugError('Slug must be between 3 and 50 characters');
+      return;
+    }
+    const isUnique = await checkSlugUniqueness(finalSlug);
+    if (!isUnique) {
+      setSlugError('This URL slug is already taken. Please choose another one.');
+      return;
+    }
+    setIsSavingToDB(true);
+    try {
+      const projectId = savedProjectCard?.id || currentProject?.id || Date.now().toString();
+      const updatedPages = pages.map((p) =>
+        p.id === activePageId ? { ...p, components, textElements, imageElements } : p
+      );
+      const projectData = {
+        id: projectId,
+        name: websiteName.trim(),
+        components,
+        textElements,
+        imageElements,
+        uploadedImages,
+        styles: globalStyles,
+        pages: updatedPages,
+        lastEdited: new Date().toISOString(),
+        type: 'custom',
+        status: 'published',
+        slug: finalSlug,
+        published_url: `${window.location.origin}/p/${finalSlug}`,
+      };
+      if (token) {
+        await saveProjectToDatabase(projectData);
+        const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+        const publishResponse = await axios.post(
+          `${API_BASE}/api/projects/${projectId}/publish`,
+          {},
+          { headers }
+        );
+        setPublishUrl(publishResponse.data.published_url || projectData.published_url);
+      } else {
+        saveProjectToLocalStorage(projectData);
+        setPublishUrl(projectData.published_url);
+      }
+      setSavedProjectCard({
+        name: websiteName.trim(),
+        id: projectId,
+        slug: finalSlug,
+        status: 'published',
+      });
+      setPublishModalOpen(false);
+      setPublishDialogOpen(true);
+      if (setCurrentProject)
+        setCurrentProject({
+          ...currentProject,
+          ...projectData,
+          status: 'published',
+          id: projectId,
+        });
+      setPages(updatedPages);
+      showSnackbar('Website published successfully!', 'success');
+      if (token) await loadProjectsFromDatabase();
+    } catch (error) {
+      console.error('Error publishing website:', error);
+      const errorMessage = error.response?.data?.detail || 'Error publishing website';
+      showSnackbar(errorMessage, 'error');
+    } finally {
+      setIsSavingToDB(false);
     }
   };
 
@@ -2958,216 +3303,215 @@ const DesignStudio = ({
       type: currentProject?.type || 'custom',
       status: 'draft',
     };
-
-    localStorage.setItem(`project_${projectId}`, JSON.stringify(projectData));
-    localStorage.setItem('latest_project_id', projectId);
-    localStorage.setItem('latest_project_data', JSON.stringify(projectData));
-
+    saveProjectToLocalStorage(projectData);
     navigate(`/preview?id=${projectId}&t=${Date.now()}`);
     showSnackbar('Opening preview...', 'info');
   };
 
-  // Updated handlePublish - opens modal instead of directly publishing
-  const handlePublish = async () => {
-    setPublishModalOpen(true);
-    setWebsiteName(currentProject?.name || savedProjectCard?.name || 'My Website');
-    setGeneratedSlug('');
-    setSlugError('');
+  const handleOpenProjectInEditor = (project) => {
+    if (setCurrentProject) setCurrentProject(project);
+    const customizations = project.customizations || {};
+    setComponents(customizations.components || []);
+    setTextElements(customizations.textElements || []);
+    setImageElements(customizations.imageElements || []);
+    setUploadedImages(customizations.uploadedImages || []);
+    if (customizations.styles) setGlobalStyles((prev) => ({ ...prev, ...customizations.styles }));
+    if (customizations.pages) {
+      setPages(customizations.pages);
+      setActivePageId(customizations.pages[0]?.id || 'page-1');
+    }
+    setSavedProjectCard({
+      name: project.name,
+      id: project.id,
+      slug: project.slug || project.publishSlug,
+    });
+    setShowProjectsGallery(false);
+    showSnackbar(`Opened "${project.name}"`, 'success');
   };
 
-  // Save website to database and generate link
-  // In DesignStudio.js, replace the saveWebsiteToDatabase function:
-
-  const saveWebsiteToDatabase = async () => {
-    if (!websiteName.trim()) {
-      showSnackbar('Please enter a website name', 'warning');
-      return;
-    }
-
-    let finalSlug = generatedSlug;
-
-    // Generate slug from website name if not provided
-    if (!finalSlug) {
-      finalSlug = websiteName
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-+|-+$/g, '');
-    }
-
-    // Validate slug format
-    if (!/^[a-z0-9-]+$/.test(finalSlug)) {
-      setSlugError('Slug can only contain lowercase letters, numbers, and hyphens');
-      return;
-    }
-
-    if (finalSlug.length < 3 || finalSlug.length > 50) {
-      setSlugError('Slug must be between 3 and 50 characters');
-      return;
-    }
-
-    // Check slug uniqueness
-    const isUnique = await checkSlugUniqueness(finalSlug);
-    if (!isUnique) {
-      setSlugError('This URL slug is already taken. Please choose another one.');
-      return;
-    }
-
-    setIsSavingToDB(true);
-
-    try {
-      const projectId = savedProjectCard?.id || currentProject?.id || Date.now().toString();
-
-      // Flush current canvas into active page
-      const updatedPages = pages.map((p) =>
-        p.id === activePageId ? { ...p, components, textElements, imageElements } : p
-      );
-
-      // Prepare website data - this matches the Project model in the database
-      const websiteData = {
-        id: projectId,
-        name: websiteName.trim(),
-        designs: [], // Design IDs - can be populated if using templates
-        customizations: {
-          components: components,
-          textElements: textElements,
-          imageElements: imageElements,
-          uploadedImages: uploadedImages,
-          styles: globalStyles,
-          pages: updatedPages,
-        },
-        html_code: generatedCode || generateHTMLCodeForSave(),
-        status: 'published',
-        published_url: `${window.location.origin}/p/${finalSlug}`,
-      };
-
-      // Save to backend API using the /api/projects endpoint
-      // First, create/update the project
-      const token = localStorage.getItem('token');
-      const headers = {
-        'Content-Type': 'application/json',
-      };
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-
-      // Check if project exists
-      let response;
+  const loadProjectFromSavedPages = useCallback(
+    (project) => {
+      if (!project) return;
+      setLoading(true);
       try {
-        // Try to get existing project
-        const getResponse = await axios.get(`/api/projects/${projectId}`, { headers });
-        if (getResponse.data) {
-          // Update existing project
-          response = await axios.put(
-            `/api/projects/${projectId}`,
-            {
-              name: websiteName.trim(),
-              customizations: websiteData.customizations,
-              html_code: websiteData.html_code,
-            },
-            { headers }
-          );
+        const customizations = project.customizations || {};
+        setComponents(customizations.components || project.components || []);
+        setTextElements(customizations.textElements || project.textElements || []);
+        setImageElements(customizations.imageElements || project.imageElements || []);
+        setUploadedImages(customizations.uploadedImages || project.uploadedImages || []);
+        if (customizations.styles || project.styles)
+          setGlobalStyles((prev) => ({
+            ...prev,
+            ...(customizations.styles || project.styles || {}),
+          }));
+        if (customizations.pages || project.pages) {
+          const pagesData = customizations.pages || project.pages;
+          setPages(pagesData);
+          setActivePageId(pagesData[0]?.id || 'page-1');
         }
-      } catch (error) {
-        // Project doesn't exist, create new
-        response = await axios.post(
-          '/api/projects',
-          {
-            name: websiteName.trim(),
-            designs: [],
-            customizations: websiteData.customizations,
-          },
-          { headers }
-        );
-      }
-
-      // Then publish the project
-      const publishResponse = await axios.post(
-        `/api/projects/${projectId}/publish`,
-        {},
-        { headers }
-      );
-
-      // Also save to /api/websites/publish endpoint for backward compatibility
-      try {
-        await axios.post('/api/websites/publish', websiteData, { headers });
-      } catch (e) {
-        console.warn('Additional publish endpoint not available:', e.message);
-      }
-
-      // Store locally for backup/offline access
-      localStorage.setItem(`published_${projectId}`, JSON.stringify(websiteData));
-      localStorage.setItem(
-        `project_${projectId}`,
-        JSON.stringify({
-          ...websiteData,
-          status: 'published',
-          lastEdited: new Date().toISOString(),
-        })
-      );
-      localStorage.setItem(`published_slug_${finalSlug}`, JSON.stringify(websiteData));
-
-      // Update savedProjectCard with new info
-      setSavedProjectCard({
-        name: websiteName.trim(),
-        id: projectId,
-        publishSlug: finalSlug,
-        thumbnail: generateThumbnailDataUrl(globalStyles),
-        status: 'published',
-      });
-
-      // Set the publish URL for the success dialog
-      setPublishUrl(websiteData.published_url || publishResponse.data?.published_url);
-      setPublishModalOpen(false);
-      setPublishDialogOpen(true);
-
-      if (setCurrentProject) {
-        setCurrentProject({
-          ...currentProject,
-          ...websiteData,
-          status: 'published',
-          id: projectId,
+        setSavedProjectCard({
+          name: project.name,
+          id: project.id,
+          slug: project.slug || project.publishSlug,
+          status: project.status || 'draft',
         });
+        if (setCurrentProject) setCurrentProject(project);
+        setShowProjectsGallery(false);
+        showSnackbar(`Loaded "${project.name}" successfully!`, 'success');
+      } catch (error) {
+        console.error('Error loading project from Saved Pages:', error);
+        showSnackbar('Error loading project', 'error');
+      } finally {
+        setLoading(false);
       }
+    },
+    [setCurrentProject]
+  );
 
-      // Update pages state
-      setPages(updatedPages);
+  const loadDesignFromTemplates = useCallback(
+    (template) => {
+      if (!template) return;
+      setLoading(true);
+      try {
+        if (template.colors) {
+          setGlobalStyles((prev) => ({ ...prev, ...template.colors }));
+          localStorage.setItem('selectedDesignColors', JSON.stringify(template.colors));
+        }
+        const newProject = {
+          id: `project_${Date.now()}`,
+          name: template.name || 'Untitled Design',
+          type: template.category || 'custom',
+          lastEdited: new Date().toISOString(),
+          status: 'draft',
+          design: template.name,
+          templateId: template.id,
+          colors: template.colors || {},
+        };
+        const templateComponents = getTemplateComponents(template.name);
+        setComponents(templateComponents);
+        const defaultTexts = [
+          {
+            id: `text_${Date.now()}`,
+            type: 'text',
+            tag: 'h1',
+            content: template.colors?.heroTitle || 'Welcome to Your Website',
+            styles: {
+              fontSize: '48px',
+              fontWeight: 'bold',
+              color: template.colors?.headingColor || '#FFFFFF',
+              textAlign: 'center',
+              margin: '20px 0',
+              fontFamily: globalStyles.fontFamily,
+            },
+            position: { x: 50, y: 100 },
+          },
+          {
+            id: `text_${Date.now() + 1}`,
+            type: 'text',
+            tag: 'p',
+            content:
+              template.colors?.heroSubtitle ||
+              'Create something amazing with our drag-and-drop editor',
+            styles: {
+              fontSize: '18px',
+              fontWeight: 'normal',
+              color: template.colors?.textColor || 'rgba(255,255,255,0.8)',
+              textAlign: 'center',
+              margin: '20px 0',
+              fontFamily: globalStyles.fontFamily,
+              maxWidth: '800px',
+            },
+            position: { x: 50, y: 180 },
+          },
+        ];
+        setTextElements(defaultTexts);
+        setImageElements([]);
+        setSavedProjectCard({ name: newProject.name, id: newProject.id, status: 'draft' });
+        if (setCurrentProject) setCurrentProject(newProject);
+        saveProjectToLocalStorage({
+          ...newProject,
+          components: templateComponents,
+          textElements: defaultTexts,
+          imageElements: [],
+          uploadedImages: [],
+          styles: { ...globalStyles, ...(template.colors || {}) },
+          pages: [
+            {
+              id: 'page-1',
+              name: 'Home',
+              components: templateComponents,
+              textElements: defaultTexts,
+              imageElements: [],
+            },
+          ],
+        });
+        showSnackbar(`"${template.name}" template loaded successfully!`, 'success');
+      } catch (error) {
+        console.error('Error loading design from templates:', error);
+        showSnackbar('Error loading template', 'error');
+      } finally {
+        setLoading(false);
+      }
+    },
+    [globalStyles.fontFamily, setCurrentProject]
+  );
 
-      showSnackbar('Website published successfully!', 'success');
+  const handleDeleteProject = async (projectId) => {
+    if (!window.confirm('Are you sure you want to delete this project?')) return;
+    try {
+      if (token)
+        await axios.delete(`${API_BASE}/api/projects/${projectId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      localStorage.removeItem(`project_${projectId}`);
+      setAllProjects((prev) => prev.filter((p) => p.id !== projectId));
+      setShowProjectsGallery(false);
+      showSnackbar('Project deleted successfully', 'info');
+      if (token) await loadProjectsFromDatabase();
     } catch (error) {
-      console.error('Error saving to database:', error);
-      const errorMessage =
-        error.response?.data?.detail || error.response?.data?.message || 'Error publishing website';
-      showSnackbar(errorMessage, 'error');
-    } finally {
-      setIsSavingToDB(false);
+      console.error('Error deleting project:', error);
+      showSnackbar('Error deleting project', 'error');
     }
   };
 
-  // Helper function to generate HTML code for save
-  const generateHTMLCodeForSave = () => {
-    // This should generate HTML similar to generateHTMLCode but without React dependencies
-    // For simplicity, we'll use the existing generateHTMLCode if available
-    if (typeof generateHTMLCode === 'function') {
-      generateHTMLCode();
-      return generatedCode || '';
+  // ── Page management ──
+  const handleSwitchPage = (pageId) => {
+    setPages((prev) =>
+      prev.map((p) =>
+        p.id === activePageId ? { ...p, components, textElements, imageElements } : p
+      )
+    );
+    setActivePageId(pageId);
+  };
+
+  const handleAddPage = () => {
+    const name = newPageName.trim() || `Page ${pages.length + 1}`;
+    const newPage = {
+      id: `page-${Date.now()}`,
+      name,
+      components: [],
+      textElements: [],
+      imageElements: [],
+    };
+    setPages((prev) => [...prev, newPage]);
+    setNewPageName('');
+    setAddPageDialogOpen(false);
+    handleSwitchPage(newPage.id);
+    showSnackbar(`Page "${name}" created`, 'success');
+  };
+
+  const handleDeletePage = (pageId) => {
+    if (pages.length === 1) {
+      showSnackbar('Cannot delete the only page', 'warning');
+      return;
     }
-    return '';
+    const remaining = pages.filter((p) => p.id !== pageId);
+    setPages(remaining);
+    if (activePageId === pageId) handleSwitchPage(remaining[0].id);
+    showSnackbar('Page deleted', 'info');
   };
 
-  const showSnackbar = (message, severity) => {
-    setSnackbar({ open: true, message, severity });
-  };
-
-  const copyToClipboard = () => {
-    navigator.clipboard.writeText(publishUrl);
-    showSnackbar('Link copied to clipboard!', 'success');
-  };
-
-  const copyCodeToClipboard = () => {
-    navigator.clipboard.writeText(generatedCode);
-    showSnackbar('Code copied to clipboard!', 'success');
-  };
-
+  // ── Color picker ──
   const handleColorPickerOpen = (event, target, property) => {
     setColorPickerAnchor(event.currentTarget);
     setSelectedColorTarget({ target, property });
@@ -3180,516 +3524,118 @@ const DesignStudio = ({
 
   const handleColorChange = (color) => {
     if (selectedColorTarget) {
-      if (selectedColorTarget.target === 'global') {
+      if (selectedColorTarget.target === 'global')
         handleStyleChange(selectedColorTarget.property, color.hex);
-      } else if (selectedColorTarget.target === 'text' && selectedTextElement) {
+      else if (selectedColorTarget.target === 'text' && selectedTextElement)
         handleTextStyleChange(selectedTextElement.id, selectedColorTarget.property, color.hex);
-      }
+      else if (selectedColorTarget.target === 'component' && selectedComponent)
+        handleUpdateComponent(selectedComponent.id, {
+          styles: { ...selectedComponent.styles, [selectedColorTarget.property]: color.hex },
+        });
     }
   };
 
-  const applyColorPalette = (palette) => {
-    setGlobalStyles((prev) => ({
-      ...prev,
-      primaryColor: palette.colors[0],
-      secondaryColor: palette.colors[1],
-      accentColor: palette.colors[2],
-    }));
-    localStorage.setItem(
-      'selectedDesignColors',
-      JSON.stringify({
-        primaryColor: palette.colors[0],
-        secondaryColor: palette.colors[1],
-        accentColor: palette.colors[2],
-        backgroundColor: globalStyles.backgroundColor,
-        textColor: globalStyles.textColor,
-        headingColor: globalStyles.headingColor,
-      })
-    );
-    showSnackbar(`${palette.name} palette applied`, 'success');
+  const copyToClipboard = () => {
+    navigator.clipboard.writeText(publishUrl);
+    showSnackbar('Link copied to clipboard!', 'success');
   };
 
-  // Publish Modal Component
-  const renderPublishModal = () => (
-    <Dialog
-      open={publishModalOpen}
-      onClose={() => !isSavingToDB && setPublishModalOpen(false)}
-      maxWidth="md"
-      fullWidth
-      PaperProps={{
-        sx: {
-          bgcolor: '#0A0F1A',
-          backgroundImage: 'none',
-          borderRadius: '20px',
-          border: `1px solid ${alpha(G_START, 0.25)}`,
-          color: 'white',
-          overflow: 'hidden',
-        },
-      }}
-    >
-      <Box sx={{ height: 4, background: GRAD }} />
-
-      <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1.5, pt: 3 }}>
-        <Box
-          sx={{
-            width: 40,
-            height: 40,
-            borderRadius: '12px',
-            background: GRAD,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          <Publish sx={{ fontSize: 20, color: 'white' }} />
-        </Box>
-        <Box>
-          <Typography variant="h6" sx={{ color: 'white', fontWeight: 700 }}>
-            Publish Your Website
-          </Typography>
-          <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.45) }}>
-            Your website will be saved to your account and given a unique URL
-          </Typography>
-        </Box>
-      </DialogTitle>
-
-      <DialogContent sx={{ pt: 2 }}>
-        <Stack spacing={3}>
-          {/* Website Name Input */}
-          <Box>
-            <Typography variant="subtitle2" sx={{ color: alpha('#FFFFFF', 0.7), mb: 1 }}>
-              Website Name *
-            </Typography>
-            <TextField
-              fullWidth
-              placeholder="e.g., My Awesome Portfolio"
-              value={websiteName}
-              onChange={(e) => setWebsiteName(e.target.value)}
-              disabled={isSavingToDB}
-              sx={{
-                '& .MuiInputBase-input': { color: 'white' },
-                '& .MuiOutlinedInput-notchedOutline': { borderColor: alpha('#FFFFFF', 0.2) },
-                '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: alpha(G_START, 0.6) },
-              }}
-            />
-          </Box>
-
-          {/* Custom URL Slug Input */}
-          <Box>
-            <Typography variant="subtitle2" sx={{ color: alpha('#FFFFFF', 0.7), mb: 1 }}>
-              Custom URL (optional)
-            </Typography>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <Typography sx={{ color: alpha('#FFFFFF', 0.5), fontSize: '14px' }}>
-                {window.location.origin}/p/
-              </Typography>
-              <TextField
-                placeholder="my-unique-url"
-                value={generatedSlug}
-                onChange={(e) => {
-                  const newSlug = e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '');
-                  setGeneratedSlug(newSlug);
-                  setSlugError('');
-                }}
-                disabled={isSavingToDB}
-                error={!!slugError}
-                helperText={slugError}
-                sx={{
-                  flex: 1,
-                  '& .MuiInputBase-input': { color: 'white' },
-                  '& .MuiOutlinedInput-notchedOutline': { borderColor: alpha('#FFFFFF', 0.2) },
-                  '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: alpha(G_START, 0.6) },
-                }}
-              />
-            </Box>
-            <Typography
-              variant="caption"
-              sx={{ color: alpha('#FFFFFF', 0.35), mt: 0.5, display: 'block' }}
-            >
-              Leave empty to auto-generate from website name. Use only letters, numbers, and
-              hyphens.
-            </Typography>
-          </Box>
-
-          {/* Preview of what will be saved */}
-          <Box
-            sx={{
-              mt: 2,
-              p: 2,
-              borderRadius: '12px',
-              bgcolor: alpha(G_START, 0.05),
-              border: `1px solid ${alpha(G_START, 0.15)}`,
-            }}
-          >
-            <Typography variant="subtitle2" sx={{ color: G_START, mb: 1.5 }}>
-              Publish Summary
-            </Typography>
-
-            <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-              <Box>
-                <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.5) }}>
-                  Components
-                </Typography>
-                <Typography variant="body2" sx={{ color: 'white', fontWeight: 600 }}>
-                  {components.length}
-                </Typography>
-              </Box>
-              <Box>
-                <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.5) }}>
-                  Text Elements
-                </Typography>
-                <Typography variant="body2" sx={{ color: 'white', fontWeight: 600 }}>
-                  {textElements.length}
-                </Typography>
-              </Box>
-              <Box>
-                <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.5) }}>
-                  Images
-                </Typography>
-                <Typography variant="body2" sx={{ color: 'white', fontWeight: 600 }}>
-                  {imageElements.length}
-                </Typography>
-              </Box>
-              <Box>
-                <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.5) }}>
-                  Uploaded Assets
-                </Typography>
-                <Typography variant="body2" sx={{ color: 'white', fontWeight: 600 }}>
-                  {uploadedImages.length}
-                </Typography>
-              </Box>
-            </Box>
-          </Box>
-
-          {/* Info about database storage */}
-          <Alert
-            severity="info"
-            sx={{
-              bgcolor: alpha(G_START, 0.1),
-              color: alpha('#FFFFFF', 0.8),
-              '& .MuiAlert-icon': { color: G_START },
-            }}
-          >
-            <Typography variant="caption">
-              Your website will be saved to your account database. You can edit and republish
-              anytime. The published link will be permanent and shareable.
-            </Typography>
-          </Alert>
-        </Stack>
-      </DialogContent>
-
-      <DialogActions sx={{ px: 3, pb: 3, pt: 1, gap: 1.5 }}>
-        <Button
-          onClick={() => setPublishModalOpen(false)}
-          disabled={isSavingToDB}
-          sx={{ color: alpha('#FFFFFF', 0.6), '&:hover': { color: 'white' } }}
-        >
-          Cancel
-        </Button>
-        <Button
-          onClick={saveWebsiteToDatabase}
-          variant="contained"
-          disabled={isSavingToDB || !websiteName.trim()}
-          startIcon={isSavingToDB ? <CircularProgress size={18} /> : <Publish />}
-          sx={{
-            background: GRAD,
-            borderRadius: '10px',
-            fontWeight: 700,
-            px: 4,
-            '&:hover': { opacity: 0.9 },
-            '&:disabled': { opacity: 0.5 },
-          }}
-        >
-          {isSavingToDB ? 'Publishing...' : 'Publish Website'}
-        </Button>
-      </DialogActions>
-    </Dialog>
-  );
-
-  const renderPreview = () => {
-    const previewWidth = {
-      mobile: '375px',
-      tablet: '768px',
-      desktop: '100%',
-    }[previewMode];
-
-    const backgroundStyle = {
-      backgroundColor: globalStyles.backgroundColor,
-      ...(globalStyles.backgroundGradient && { backgroundImage: globalStyles.backgroundGradient }),
-      ...(globalStyles.backgroundImage && {
-        backgroundImage: `url(${globalStyles.backgroundImage})`,
-      }),
-      backgroundBlendMode: globalStyles.backgroundBlur > 0 ? 'overlay' : 'normal',
-      backdropFilter:
-        globalStyles.backgroundBlur > 0 ? `blur(${globalStyles.backgroundBlur}px)` : 'none',
-      opacity: globalStyles.backgroundOpacity,
-    };
-
-    // Combine all draggable elements
-    const allDraggableElements = [...textElements, ...imageElements];
-
-    return (
-      <Box
-        ref={canvasRef}
-        sx={{
-          width: previewWidth,
-          margin: '0 auto',
-          transition: 'all 0.3s ease',
-          color: globalStyles.textColor,
-          fontFamily: globalStyles.fontFamily,
-          minHeight: '100vh',
-          position: 'relative',
-          ...backgroundStyle,
-        }}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
-        <style>{`
-          .preview-container {
-            background-color: ${globalStyles.backgroundColor};
-            color: ${globalStyles.textColor};
-            font-family: ${globalStyles.fontFamily};
-          }
-          .preview-container h1, .preview-container h2, .preview-container h3,
-          .preview-container h4, .preview-container h5, .preview-container h6 {
-            color: ${globalStyles.headingColor};
-          }
-          .preview-container a {
-            color: ${globalStyles.primaryColor};
-            text-decoration: none;
-          }
-          .preview-container a:hover {
-            text-decoration: underline;
-          }
-          .preview-container .hero-section {
-            background: linear-gradient(135deg, ${globalStyles.primaryColor}, ${globalStyles.secondaryColor});
-            border-radius: ${globalStyles.borderRadius};
-            padding: ${globalStyles.spacing};
-          }
-          .preview-container button {
-            background: ${globalStyles.primaryColor};
-            border-radius: ${globalStyles.buttonStyle === 'rounded' ? '999px' : globalStyles.borderRadius};
-            transition: all 0.3s ease;
-          }
-          .preview-container button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-          }
-          ${
-            globalStyles.animationEnabled &&
-            `
-            .preview-container [data-animate] {
-              animation: fadeInUp 0.6s ease-out;
-            }
-            @keyframes fadeInUp {
-              from {
-                opacity: 0;
-                transform: translateY(20px);
-              }
-              to {
-                opacity: 1;
-                transform: translateY(0);
-              }
-            }
-          `
-          }
-          .draggable-element {
-            cursor: ${dragDropMode ? 'move' : 'pointer'};
-            transition: transform 0.2s ease;
-          }
-          .draggable-element:hover {
-            transform: scale(1.02);
-          }
-          .drag-overlay {
-            border: 2px dashed ${G_START};
-            background: ${alpha(G_START, 0.1)};
-          }
-          .image-element {
-            transition: all 0.3s ease;
-          }
-          .image-element:hover {
-            transform: scale(1.02);
-            box-shadow: 0 8px 24px rgba(0,0,0,0.2);
-          }
-        `}</style>
-
-        <div
-          className={`preview-container ${dragOver ? 'drag-overlay' : ''}`}
-          style={{ position: 'relative', minHeight: '100vh' }}
-        >
-          {/* Draggable Elements (Text and Images) */}
-          {allDraggableElements.map((element, index) => (
-            <motion.div
-              key={element.id}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: index * 0.05 }}
-              className="draggable-element image-element"
-              style={{
-                position: dragDropMode ? 'absolute' : 'relative',
-                left: dragDropMode ? `${element.position?.x || 50}px` : 'auto',
-                top: dragDropMode ? `${element.position?.y || 100}px` : 'auto',
-                cursor: dragDropMode ? 'move' : 'pointer',
-                ...element.styles,
-              }}
-              onClick={() =>
-                !dragDropMode &&
-                (element.type === 'image'
-                  ? setSelectedImageElement(element)
-                  : setSelectedTextElement(element))
-              }
-              onMouseDown={(e) => {
-                if (dragDropMode) {
-                  const startX = e.clientX;
-                  const startY = e.clientY;
-                  const startPos = { x: element.position?.x || 50, y: element.position?.y || 100 };
-
-                  const onMouseMove = (moveEvent) => {
-                    const dx = moveEvent.clientX - startX;
-                    const dy = moveEvent.clientY - startY;
-                    handleTextPositionChange(element.id, startPos.x + dx, startPos.y + dy);
-                  };
-
-                  const onMouseUp = () => {
-                    document.removeEventListener('mousemove', onMouseMove);
-                    document.removeEventListener('mouseup', onMouseUp);
-                  };
-
-                  document.addEventListener('mousemove', onMouseMove);
-                  document.addEventListener('mouseup', onMouseUp);
-                }
-              }}
-              whileHover={dragDropMode ? { scale: 1.05 } : {}}
-            >
-              {element.type === 'image' ? (
-                <img
-                  src={element.imageUrl}
-                  alt={element.alt}
-                  style={{
-                    width: element.width,
-                    height: element.height,
-                    objectFit: element.objectFit,
-                    borderRadius: element.borderRadius,
-                    filter: element.styles?.filter,
-                    transform: element.styles?.transform,
-                    cursor: 'pointer',
-                    transition: 'all 0.3s ease',
-                  }}
-                  onClick={() => setSelectedImageElement(element)}
-                />
-              ) : editingText === element.id ? (
-                <TextField
-                  autoFocus
-                  fullWidth
-                  multiline={element.tag === 'p' || element.tag === 'div'}
-                  value={element.content}
-                  onChange={(e) => handleUpdateTextElement(element.id, { content: e.target.value })}
-                  onBlur={() => setEditingText(null)}
-                  onKeyPress={(e) => e.key === 'Enter' && setEditingText(null)}
-                  sx={{
-                    '& .MuiInputBase-root': {
-                      color: element.styles.color,
-                      fontSize: element.styles.fontSize,
-                      fontWeight: element.styles.fontWeight,
-                      fontFamily: element.styles.fontFamily,
-                      backgroundColor: 'rgba(0,0,0,0.1)',
-                    },
-                  }}
-                />
-              ) : (
-                React.createElement(
-                  element.tag,
-                  {
-                    style: element.styles,
-                    onClick: (e) => {
-                      e.stopPropagation();
-                      if (!dragDropMode) setEditingText(element.id);
-                    },
-                    ...(element.tag === 'a' && { href: element.href || '#', target: '_blank' }),
-                  },
-                  element.content
-                )
-              )}
-              {selectedTextElement?.id === element.id && !dragDropMode && (
-                <Box
-                  sx={{
-                    position: 'absolute',
-                    top: -2,
-                    left: -2,
-                    right: -2,
-                    bottom: -2,
-                    border: `2px solid ${globalStyles.primaryColor}`,
-                    borderRadius: '4px',
-                    pointerEvents: 'none',
-                    zIndex: 10,
-                  }}
-                />
-              )}
-              {selectedImageElement?.id === element.id &&
-                !dragDropMode &&
-                element.type === 'image' && (
-                  <Box
-                    sx={{
-                      position: 'absolute',
-                      top: -2,
-                      left: -2,
-                      right: -2,
-                      bottom: -2,
-                      border: `2px solid ${globalStyles.primaryColor}`,
-                      borderRadius: '4px',
-                      pointerEvents: 'none',
-                      zIndex: 10,
-                    }}
-                  />
-                )}
-            </motion.div>
-          ))}
-
-          {/* Component Sections */}
-          {components.map((component, index) => (
-            <motion.div
-              key={component.id}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: index * 0.1 }}
-              onClick={() => setSelectedComponent(component)}
-              style={{
-                cursor: 'pointer',
-                position: 'relative',
-                ...component.styles,
-              }}
-              whileHover={{ scale: 1.01 }}
-            >
-              {selectedComponent?.id === component.id && (
-                <Box
-                  sx={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    border: `2px solid ${globalStyles.primaryColor}`,
-                    borderRadius: globalStyles.borderRadius,
-                    pointerEvents: 'none',
-                    zIndex: 10,
-                  }}
-                />
-              )}
-              {renderComponent(component)}
-            </motion.div>
-          ))}
-        </div>
-      </Box>
-    );
+  const copyCodeToClipboard = () => {
+    navigator.clipboard.writeText(generatedCode);
+    showSnackbar('Code copied to clipboard!', 'success');
   };
 
+  // ── Generate HTML ──
+  const generateHTMLCode = () => {
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${currentProject?.name || 'My Website'}</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background-color: ${globalStyles.backgroundColor}; color: ${globalStyles.textColor}; font-family: ${globalStyles.fontFamily}; line-height: 1.6; }
+    h1, h2, h3, h4, h5, h6 { color: ${globalStyles.headingColor}; }
+    .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+    .hero { text-align: center; padding: 80px 20px; background: linear-gradient(135deg, ${globalStyles.primaryColor}, ${globalStyles.secondaryColor}); border-radius: ${globalStyles.borderRadius}; }
+    button { background: ${globalStyles.primaryColor}; border: none; padding: 12px 24px; border-radius: ${globalStyles.buttonStyle === 'rounded' ? '999px' : globalStyles.borderRadius}; color: white; cursor: pointer; }
+    .features-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px; padding: 60px 20px; }
+    .feature-card { background: rgba(255,255,255,0.05); padding: 24px; border-radius: ${globalStyles.borderRadius}; text-align: center; }
+    .footer { background: ${alpha(globalStyles.primaryColor, 0.05)}; padding: 40px 20px; margin-top: 40px; border-top: 1px solid ${alpha(globalStyles.primaryColor, 0.1)}; }
+    .nav-menu { display: flex; gap: 24px; justify-content: center; padding: 12px 0; flex-wrap: wrap; }
+    .nav-menu a { color: ${globalStyles.textColor}; text-decoration: none; padding: 8px 16px; border-radius: ${globalStyles.borderRadius}; transition: all 0.3s ease; }
+    .nav-menu a:hover { color: ${globalStyles.primaryColor}; background: ${alpha(globalStyles.primaryColor, 0.1)}; }
+    .logo-text { font-weight: 700; background: linear-gradient(135deg, ${globalStyles.primaryColor}, ${globalStyles.secondaryColor}); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    ${components.find((c) => c.type === 'logo') ? `<div style="display: flex; align-items: center; gap: 16px; padding: 16px 0;">${components.find((c) => c.type === 'logo').content.image ? `<img src="${components.find((c) => c.type === 'logo').content.image}" alt="Logo" style="height: 48px; width: auto;" />` : `<span class="logo-text" style="font-size: 24px;">${components.find((c) => c.type === 'logo').content.text || 'Your Logo'}</span>`}</div>` : ''}
+    ${
+      textElements.find((el) => el.isNav)
+        ? `<nav class="nav-menu">${textElements
+            .find((el) => el.isNav)
+            .content.split('|')
+            .map((item) => `<a href="#">${item.trim()}</a>`)
+            .join('')}</nav>`
+        : ''
+    }
+    ${components.find((c) => c.type === 'hero') ? `<div class="hero"><h1>${components.find((c) => c.type === 'hero')?.content?.title || 'Welcome to Your Website'}</h1><p>${components.find((c) => c.type === 'hero')?.content?.subtitle || 'Create something amazing'}</p><button>${components.find((c) => c.type === 'hero')?.content?.buttonText || 'Get Started'}</button></div>` : ''}
+    ${
+      components.find((c) => c.type === 'features')
+        ? `<div class="features-grid">${
+            components
+              .find((c) => c.type === 'features')
+              ?.content?.items?.map(
+                (item) =>
+                  `<div class="feature-card"><h3>${item.title}</h3><p>${item.description}</p></div>`
+              )
+              .join('') || ''
+          }</div>`
+        : ''
+    }
+    ${
+      components.find((c) => c.type === 'footer')
+        ? `<div class="footer"><h3>${components.find((c) => c.type === 'footer')?.content?.companyName || 'Your Company'}</h3><p>${components.find((c) => c.type === 'footer')?.content?.tagline || ''}</p><div style="margin-top: 20px;">${
+            components
+              .find((c) => c.type === 'footer')
+              ?.content?.links?.map(
+                (link) =>
+                  `<a href="${link.url}" style="color: ${globalStyles.primaryColor}; margin: 0 8px; text-decoration: none;">${link.label}</a>`
+              )
+              .join('') || ''
+          }</div><p style="margin-top: 20px; color: ${alpha(globalStyles.textColor, 0.5)};">${components.find((c) => c.type === 'footer')?.content?.copyright || `© ${new Date().getFullYear()} ${components.find((c) => c.type === 'footer')?.content?.companyName || 'Your Company'}. All rights reserved.`}</p></div>`
+        : ''
+    }
+  </div>
+</body>
+</html>`;
+    setGeneratedCode(html);
+  };
+
+  useEffect(() => {
+    if (showCode) generateHTMLCode();
+  }, [showCode, components, globalStyles, textElements]);
+
+  useEffect(() => {
+    if (currentProject?.design) loadTemplateDesign(currentProject.design);
+    else if (mergedDesign) initializeFromDesign();
+    else if (currentProject?.components) {
+      setComponents(currentProject.components);
+      if (currentProject.textElements) setTextElements(currentProject.textElements);
+      if (currentProject.imageElements) setImageElements(currentProject.imageElements);
+      if (currentProject.uploadedImages) setUploadedImages(currentProject.uploadedImages);
+      if (currentProject.styles) setGlobalStyles(currentProject.styles);
+    } else {
+      initializeDefaultComponents();
+      initializeDefaultTextElements();
+    }
+  }, [currentProject, mergedDesign]);
+
+  // ── Render component ──
   const renderComponent = (component) => {
-    const styles = {
-      color: globalStyles.textColor,
-      ...component.styles,
-    };
-
+    const styles = { color: globalStyles.textColor, ...component.styles };
     switch (component.type) {
       case 'hero':
         return (
@@ -3704,8 +3650,6 @@ const DesignStudio = ({
                   height: 'auto',
                   mb: 4,
                   borderRadius: globalStyles.borderRadius,
-                  transition: 'transform 0.3s',
-                  '&:hover': { transform: 'scale(1.02)' },
                 }}
               />
             )}
@@ -3717,7 +3661,6 @@ const DesignStudio = ({
                 fontWeight: 'bold',
                 color: globalStyles.headingColor,
               }}
-              onDoubleClick={() => handleUpdateComponentContent(component.id, 'title', '')}
             >
               {component.content.title}
             </Typography>
@@ -3729,7 +3672,6 @@ const DesignStudio = ({
                 maxWidth: '800px',
                 mx: 'auto',
               }}
-              onDoubleClick={() => handleUpdateComponentContent(component.id, 'subtitle', '')}
             >
               {component.content.subtitle}
             </Typography>
@@ -3744,13 +3686,212 @@ const DesignStudio = ({
                 px: 4,
                 py: 1.5,
               }}
-              onDoubleClick={() => handleUpdateComponentContent(component.id, 'buttonText', '')}
             >
               {component.content.buttonText}
             </Button>
           </Box>
         );
-
+      case 'logo':
+        return (
+          <Box sx={{ ...styles, display: 'flex', alignItems: 'center', gap: 2, py: 2, px: 4 }}>
+            {component.content.image ? (
+              <Box
+                component="img"
+                src={component.content.image}
+                alt="Logo"
+                sx={{
+                  height:
+                    component.content.size === 'small'
+                      ? 32
+                      : component.content.size === 'large'
+                        ? 64
+                        : 48,
+                  width: 'auto',
+                  objectFit: 'contain',
+                }}
+              />
+            ) : (
+              <Typography
+                variant="h4"
+                sx={{
+                  fontWeight: 700,
+                  background: `linear-gradient(135deg, ${globalStyles.primaryColor}, ${globalStyles.secondaryColor})`,
+                  backgroundClip: 'text',
+                  WebkitBackgroundClip: 'text',
+                  color: 'transparent',
+                  fontSize:
+                    component.content.size === 'small'
+                      ? '1.2rem'
+                      : component.content.size === 'large'
+                        ? '2rem'
+                        : '1.5rem',
+                }}
+              >
+                {component.content.text || 'Your Logo'}
+              </Typography>
+            )}
+            {component.content.tagline && (
+              <Typography variant="body2" sx={{ color: alpha(globalStyles.textColor, 0.6), ml: 1 }}>
+                {component.content.tagline}
+              </Typography>
+            )}
+          </Box>
+        );
+      case 'footer': {
+        const footerLinks = component.content.links || [];
+        const socialLinks = component.content.socialLinks || [];
+        const columns = component.content.columns || 4;
+        return (
+          <Box
+            sx={{
+              ...styles,
+              py: 6,
+              px: 4,
+              mt: 4,
+              backgroundColor: alpha(globalStyles.primaryColor, 0.05),
+              borderTop: `1px solid ${alpha(globalStyles.primaryColor, 0.1)}`,
+            }}
+          >
+            <Grid container spacing={4}>
+              <Grid item xs={12} md={3}>
+                <Typography
+                  variant="h6"
+                  sx={{ color: globalStyles.headingColor, fontWeight: 600, mb: 2 }}
+                >
+                  {component.content.companyName || 'Your Company'}
+                </Typography>
+                {component.content.tagline && (
+                  <Typography
+                    variant="body2"
+                    sx={{ color: alpha(globalStyles.textColor, 0.7), mb: 2 }}
+                  >
+                    {component.content.tagline}
+                  </Typography>
+                )}
+                {component.content.showNewsletter && (
+                  <Box sx={{ mt: 2 }}>
+                    <TextField
+                      size="small"
+                      placeholder="Subscribe to newsletter"
+                      sx={{
+                        '& .MuiInputBase-input': { color: globalStyles.textColor },
+                        '& .MuiOutlinedInput-notchedOutline': {
+                          borderColor: alpha(globalStyles.textColor, 0.2),
+                        },
+                        mr: 1,
+                        width: '70%',
+                      }}
+                    />
+                    <Button
+                      variant="contained"
+                      size="small"
+                      sx={{
+                        bgcolor: globalStyles.primaryColor,
+                        '&:hover': { bgcolor: globalStyles.secondaryColor },
+                        mt: { xs: 1, sm: 0 },
+                      }}
+                    >
+                      Subscribe
+                    </Button>
+                  </Box>
+                )}
+              </Grid>
+              {columns > 1 && (
+                <Grid item xs={12} md={3}>
+                  <Typography
+                    variant="subtitle1"
+                    sx={{ color: globalStyles.headingColor, fontWeight: 600, mb: 2 }}
+                  >
+                    Quick Links
+                  </Typography>
+                  {footerLinks.slice(0, Math.ceil(footerLinks.length / 2)).map((link, idx) => (
+                    <Typography
+                      key={idx}
+                      component="a"
+                      href={link.url}
+                      sx={{
+                        display: 'block',
+                        color: alpha(globalStyles.textColor, 0.7),
+                        textDecoration: 'none',
+                        mb: 1,
+                        '&:hover': { color: globalStyles.primaryColor },
+                      }}
+                    >
+                      {link.label}
+                    </Typography>
+                  ))}
+                </Grid>
+              )}
+              {columns > 2 && (
+                <Grid item xs={12} md={3}>
+                  <Typography
+                    variant="subtitle1"
+                    sx={{ color: globalStyles.headingColor, fontWeight: 600, mb: 2 }}
+                  >
+                    Resources
+                  </Typography>
+                  {footerLinks.slice(Math.ceil(footerLinks.length / 2)).map((link, idx) => (
+                    <Typography
+                      key={idx}
+                      component="a"
+                      href={link.url}
+                      sx={{
+                        display: 'block',
+                        color: alpha(globalStyles.textColor, 0.7),
+                        textDecoration: 'none',
+                        mb: 1,
+                        '&:hover': { color: globalStyles.primaryColor },
+                      }}
+                    >
+                      {link.label}
+                    </Typography>
+                  ))}
+                </Grid>
+              )}
+              {columns > 3 && (
+                <Grid item xs={12} md={3}>
+                  <Typography
+                    variant="subtitle1"
+                    sx={{ color: globalStyles.headingColor, fontWeight: 600, mb: 2 }}
+                  >
+                    Connect With Us
+                  </Typography>
+                  <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                    {socialLinks.map((social, idx) => (
+                      <IconButton
+                        key={idx}
+                        component="a"
+                        href={social.url}
+                        target="_blank"
+                        sx={{
+                          color: globalStyles.textColor,
+                          bgcolor: alpha(globalStyles.primaryColor, 0.1),
+                          '&:hover': { bgcolor: globalStyles.primaryColor, color: '#FFFFFF' },
+                        }}
+                      >
+                        {social.platform === 'Facebook' && <Facebook />}
+                        {social.platform === 'Twitter' && <Twitter />}
+                        {social.platform === 'Instagram' && <Instagram />}
+                        {social.platform === 'LinkedIn' && <LinkedIn />}
+                        {social.platform === 'YouTube' && <YouTube />}
+                        {social.platform === 'WhatsApp' && <WhatsApp />}
+                      </IconButton>
+                    ))}
+                  </Box>
+                </Grid>
+              )}
+            </Grid>
+            <Divider sx={{ my: 3, borderColor: alpha(globalStyles.textColor, 0.1) }} />
+            <Typography
+              variant="body2"
+              sx={{ textAlign: 'center', color: alpha(globalStyles.textColor, 0.5) }}
+            >
+              {component.content.copyright ||
+                `© ${new Date().getFullYear()} ${component.content.companyName || 'Your Company'}. All rights reserved.`}
+            </Typography>
+          </Box>
+        );
+      }
       case 'features':
         return (
           <Box sx={{ ...styles, py: 6, px: 4 }}>
@@ -3762,12 +3903,11 @@ const DesignStudio = ({
                 color: globalStyles.headingColor,
                 fontWeight: 'bold',
               }}
-              onDoubleClick={() => handleUpdateComponentContent(component.id, 'title', '')}
             >
               {component.content.title}
             </Typography>
             <Grid container spacing={4}>
-              {component.content.items.map((item, idx) => (
+              {component.content.items?.map((item, idx) => (
                 <Grid item xs={12} md={4} key={idx}>
                   <Paper
                     sx={{
@@ -3790,31 +3930,13 @@ const DesignStudio = ({
                           objectFit: 'cover',
                           borderRadius: globalStyles.borderRadius,
                           mb: 2,
-                          transition: 'transform 0.3s',
-                          '&:hover': { transform: 'scale(1.05)' },
                         }}
                       />
                     )}
-                    <Typography
-                      variant="h5"
-                      sx={{ mb: 2, color: globalStyles.primaryColor }}
-                      onDoubleClick={() =>
-                        handleUpdateComponentContent(component.id, 'title', item.title, idx)
-                      }
-                    >
+                    <Typography variant="h5" sx={{ mb: 2, color: globalStyles.primaryColor }}>
                       {item.title}
                     </Typography>
-                    <Typography
-                      sx={{ color: alpha(globalStyles.textColor, 0.7) }}
-                      onDoubleClick={() =>
-                        handleUpdateComponentContent(
-                          component.id,
-                          'description',
-                          item.description,
-                          idx
-                        )
-                      }
-                    >
+                    <Typography sx={{ color: alpha(globalStyles.textColor, 0.7) }}>
                       {item.description}
                     </Typography>
                   </Paper>
@@ -3823,7 +3945,6 @@ const DesignStudio = ({
             </Grid>
           </Box>
         );
-
       case 'gallery':
         return (
           <Box sx={{ ...styles, py: 6, px: 4 }}>
@@ -3835,12 +3956,11 @@ const DesignStudio = ({
                 color: globalStyles.headingColor,
                 fontWeight: 'bold',
               }}
-              onDoubleClick={() => handleUpdateComponentContent(component.id, 'title', '')}
             >
               {component.content.title}
             </Typography>
             <Grid container spacing={3}>
-              {component.content.items.map((item, idx) => (
+              {component.content.items?.map((item, idx) => (
                 <Grid item xs={12} md={4} key={idx}>
                   <Paper
                     sx={{
@@ -3863,8 +3983,6 @@ const DesignStudio = ({
                           objectFit: 'cover',
                           borderRadius: globalStyles.borderRadius,
                           mb: 2,
-                          transition: 'transform 0.3s',
-                          '&:hover': { transform: 'scale(1.05)' },
                         }}
                       />
                     ) : (
@@ -3883,26 +4001,8 @@ const DesignStudio = ({
                         <PhotoLibrary sx={{ fontSize: 48, color: globalStyles.primaryColor }} />
                       </Box>
                     )}
-                    <Typography
-                      variant="h6"
-                      onDoubleClick={() =>
-                        handleUpdateComponentContent(component.id, 'title', item.title, idx)
-                      }
-                    >
-                      {item.title}
-                    </Typography>
-                    <Typography
-                      variant="body2"
-                      sx={{ color: alpha(globalStyles.textColor, 0.7) }}
-                      onDoubleClick={() =>
-                        handleUpdateComponentContent(
-                          component.id,
-                          'description',
-                          item.description,
-                          idx
-                        )
-                      }
-                    >
+                    <Typography variant="h6">{item.title}</Typography>
+                    <Typography variant="body2" sx={{ color: alpha(globalStyles.textColor, 0.7) }}>
                       {item.description}
                     </Typography>
                   </Paper>
@@ -3911,7 +4011,6 @@ const DesignStudio = ({
             </Grid>
           </Box>
         );
-
       case 'contact':
         return (
           <Box sx={{ ...styles, py: 6, px: 4 }}>
@@ -3923,7 +4022,6 @@ const DesignStudio = ({
                 color: globalStyles.headingColor,
                 fontWeight: 'bold',
               }}
-              onDoubleClick={() => handleUpdateComponentContent(component.id, 'title', '')}
             >
               {component.content.title}
             </Typography>
@@ -3982,22 +4080,13 @@ const DesignStudio = ({
                   <Typography variant="h6" sx={{ mb: 2, color: globalStyles.headingColor }}>
                     Contact Information
                   </Typography>
-                  <Typography
-                    sx={{ mb: 1, color: alpha(globalStyles.textColor, 0.8) }}
-                    onDoubleClick={() => handleUpdateComponentContent(component.id, 'address', '')}
-                  >
+                  <Typography sx={{ mb: 1, color: alpha(globalStyles.textColor, 0.8) }}>
                     📍 {component.content.address}
                   </Typography>
-                  <Typography
-                    sx={{ mb: 1, color: alpha(globalStyles.textColor, 0.8) }}
-                    onDoubleClick={() => handleUpdateComponentContent(component.id, 'email', '')}
-                  >
+                  <Typography sx={{ mb: 1, color: alpha(globalStyles.textColor, 0.8) }}>
                     📧 {component.content.email}
                   </Typography>
-                  <Typography
-                    sx={{ color: alpha(globalStyles.textColor, 0.8) }}
-                    onDoubleClick={() => handleUpdateComponentContent(component.id, 'phone', '')}
-                  >
+                  <Typography sx={{ color: alpha(globalStyles.textColor, 0.8) }}>
                     📞 {component.content.phone}
                   </Typography>
                 </Paper>
@@ -4005,7 +4094,6 @@ const DesignStudio = ({
             </Grid>
           </Box>
         );
-
       case 'pricing':
         return (
           <Box sx={{ ...styles, py: 6, px: 4 }}>
@@ -4017,12 +4105,11 @@ const DesignStudio = ({
                 color: globalStyles.headingColor,
                 fontWeight: 'bold',
               }}
-              onDoubleClick={() => handleUpdateComponentContent(component.id, 'title', '')}
             >
               {component.content.title}
             </Typography>
             <Grid container spacing={4} justifyContent="center">
-              {component.content.plans.map((plan, idx) => (
+              {component.content.plans?.map((plan, idx) => (
                 <Grid item xs={12} md={4} key={idx}>
                   <Paper
                     sx={{
@@ -4034,39 +4121,17 @@ const DesignStudio = ({
                       '&:hover': { transform: 'translateY(-8px)' },
                     }}
                   >
-                    <Typography
-                      variant="h4"
-                      sx={{ mb: 2, color: globalStyles.primaryColor }}
-                      onDoubleClick={() =>
-                        handleUpdateComponentContent(component.id, 'name', plan.name, idx)
-                      }
-                    >
+                    <Typography variant="h4" sx={{ mb: 2, color: globalStyles.primaryColor }}>
                       {plan.name}
                     </Typography>
-                    <Typography
-                      variant="h2"
-                      sx={{ mb: 2, fontWeight: 'bold' }}
-                      onDoubleClick={() =>
-                        handleUpdateComponentContent(component.id, 'price', plan.price, idx)
-                      }
-                    >
+                    <Typography variant="h2" sx={{ mb: 2, fontWeight: 'bold' }}>
                       {plan.price}
                     </Typography>
                     <Divider sx={{ my: 2 }} />
-                    {plan.features.map((feature, fIdx) => (
+                    {plan.features?.map((feature, fIdx) => (
                       <Typography
                         key={fIdx}
                         sx={{ mb: 1, color: alpha(globalStyles.textColor, 0.7) }}
-                        onDoubleClick={() => {
-                          const updatedFeatures = [...plan.features];
-                          updatedFeatures[fIdx] = '';
-                          handleUpdateComponentContent(
-                            component.id,
-                            'features',
-                            updatedFeatures,
-                            idx
-                          );
-                        }}
                       >
                         ✓ {feature}
                       </Typography>
@@ -4088,129 +4153,713 @@ const DesignStudio = ({
             </Grid>
           </Box>
         );
-
       default:
         return (
           <Typography variant="body1" sx={styles}>
-            {component.content.text}
+            {component.content?.text}
           </Typography>
         );
     }
   };
 
-  const getComponentIcon = (type) => {
-    switch (type) {
-      case 'hero':
-        return <ImageOutlined />;
-      case 'features':
-        return <GridOn />;
-      case 'gallery':
-        return <PhotoLibrary />;
-      case 'contact':
-        return <ContactMail />;
-      case 'pricing':
-        return <ShoppingCart />;
-      default:
-        return <TextFields />;
-    }
-  };
+  // ── Render preview ──
+  const renderPreview = () => {
+    const previewWidth = { mobile: '375px', tablet: '768px', desktop: '100%' }[previewMode];
 
-  const getComponentName = (type) => {
-    return type.charAt(0).toUpperCase() + type.slice(1);
-  };
-
-  // ── Page management helpers ───────────────────────────────────────────
-  const handleSwitchPage = (pageId) => {
-    // Flush current canvas into current page first
-    setPages((prev) =>
-      prev.map((p) =>
-        p.id === activePageId ? { ...p, components, textElements, imageElements } : p
-      )
+    const renderTextFloatingToolbar = (element) => (
+      <Box
+        sx={{
+          position: 'absolute',
+          top: -48,
+          left: 0,
+          zIndex: 100,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 0.5,
+          bgcolor: '#1A1F2E',
+          border: `1px solid ${alpha(G_START, 0.4)}`,
+          borderRadius: '10px',
+          px: 1,
+          py: 0.5,
+          boxShadow: `0 4px 20px ${alpha('#000', 0.5)}`,
+          pointerEvents: 'auto',
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <Tooltip title="Bold">
+          <IconButton
+            size="small"
+            onClick={() =>
+              handleTextStyleChange(
+                element.id,
+                'fontWeight',
+                element.styles?.fontWeight === 'bold' ? 'normal' : 'bold'
+              )
+            }
+            sx={{ color: element.styles?.fontWeight === 'bold' ? G_START : 'white', p: 0.5 }}
+          >
+            <FormatBold fontSize="small" />
+          </IconButton>
+        </Tooltip>
+        <Tooltip title="Italic">
+          <IconButton
+            size="small"
+            onClick={() =>
+              handleTextStyleChange(
+                element.id,
+                'fontStyle',
+                element.styles?.fontStyle === 'italic' ? 'normal' : 'italic'
+              )
+            }
+            sx={{ color: element.styles?.fontStyle === 'italic' ? G_START : 'white', p: 0.5 }}
+          >
+            <FormatItalic fontSize="small" />
+          </IconButton>
+        </Tooltip>
+        <Tooltip title="Underline">
+          <IconButton
+            size="small"
+            onClick={() =>
+              handleTextStyleChange(
+                element.id,
+                'textDecoration',
+                element.styles?.textDecoration === 'underline' ? 'none' : 'underline'
+              )
+            }
+            sx={{
+              color: element.styles?.textDecoration === 'underline' ? G_START : 'white',
+              p: 0.5,
+            }}
+          >
+            <FormatUnderlined fontSize="small" />
+          </IconButton>
+        </Tooltip>
+        <Box sx={{ width: 1, height: 20, bgcolor: alpha('#FFFFFF', 0.2) }} />
+        <Tooltip title="Align Left">
+          <IconButton
+            size="small"
+            onClick={() => handleTextStyleChange(element.id, 'textAlign', 'left')}
+            sx={{ color: element.styles?.textAlign === 'left' ? G_START : 'white', p: 0.5 }}
+          >
+            <FormatAlignLeft fontSize="small" />
+          </IconButton>
+        </Tooltip>
+        <Tooltip title="Align Center">
+          <IconButton
+            size="small"
+            onClick={() => handleTextStyleChange(element.id, 'textAlign', 'center')}
+            sx={{ color: element.styles?.textAlign === 'center' ? G_START : 'white', p: 0.5 }}
+          >
+            <FormatAlignCenter fontSize="small" />
+          </IconButton>
+        </Tooltip>
+        <Tooltip title="Align Right">
+          <IconButton
+            size="small"
+            onClick={() => handleTextStyleChange(element.id, 'textAlign', 'right')}
+            sx={{ color: element.styles?.textAlign === 'right' ? G_START : 'white', p: 0.5 }}
+          >
+            <FormatAlignRight fontSize="small" />
+          </IconButton>
+        </Tooltip>
+        <Box sx={{ width: 1, height: 20, bgcolor: alpha('#FFFFFF', 0.2) }} />
+        <Tooltip title="Edit Text">
+          <IconButton
+            size="small"
+            onClick={() => setEditingText(element.id)}
+            sx={{ color: G_MID, p: 0.5 }}
+          >
+            <EditIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+        <Tooltip title="Delete">
+          <IconButton
+            size="small"
+            onClick={() => handleDeleteTextElement(element.id)}
+            sx={{ color: '#ff4444', p: 0.5 }}
+          >
+            <Delete fontSize="small" />
+          </IconButton>
+        </Tooltip>
+      </Box>
     );
-    setActivePageId(pageId);
+
+    const renderImageFloatingToolbar = (element) => (
+      <Box
+        sx={{
+          position: 'absolute',
+          top: -48,
+          left: 0,
+          zIndex: 100,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 0.5,
+          bgcolor: '#1A1F2E',
+          border: `1px solid ${alpha(G_MID, 0.4)}`,
+          borderRadius: '10px',
+          px: 1,
+          py: 0.5,
+          boxShadow: `0 4px 20px ${alpha('#000', 0.5)}`,
+          pointerEvents: 'auto',
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <Tooltip title="Rotate Left">
+          <IconButton
+            size="small"
+            onClick={() => handleRotateImage(element.id, -90)}
+            sx={{ color: 'white', p: 0.5 }}
+          >
+            <RotateLeft fontSize="small" />
+          </IconButton>
+        </Tooltip>
+        <Tooltip title="Rotate Right">
+          <IconButton
+            size="small"
+            onClick={() => handleRotateImage(element.id, 90)}
+            sx={{ color: 'white', p: 0.5 }}
+          >
+            <RotateRight fontSize="small" />
+          </IconButton>
+        </Tooltip>
+        <Tooltip title="Flip H">
+          <IconButton
+            size="small"
+            onClick={() => handleFlipImage(element.id, 'horizontal')}
+            sx={{ color: 'white', p: 0.5 }}
+          >
+            <Flip fontSize="small" />
+          </IconButton>
+        </Tooltip>
+        <Box sx={{ width: 1, height: 20, bgcolor: alpha('#FFFFFF', 0.2) }} />
+        <Tooltip title="Delete">
+          <IconButton
+            size="small"
+            onClick={() => handleDeleteImageElement(element.id)}
+            sx={{ color: '#ff4444', p: 0.5 }}
+          >
+            <Delete fontSize="small" />
+          </IconButton>
+        </Tooltip>
+      </Box>
+    );
+
+    const renderComponentFloatingToolbar = (component) => (
+      <Box
+        sx={{
+          position: 'absolute',
+          top: -48,
+          left: 0,
+          zIndex: 100,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 0.5,
+          bgcolor: '#1A1F2E',
+          border: `1px solid ${alpha(G_END, 0.4)}`,
+          borderRadius: '10px',
+          px: 1,
+          py: 0.5,
+          boxShadow: `0 4px 20px ${alpha('#000', 0.5)}`,
+          pointerEvents: 'auto',
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <Typography variant="caption" sx={{ color: G_END, px: 1, fontWeight: 600 }}>
+          {getComponentName(component.type)}
+        </Typography>
+        <Box sx={{ width: 1, height: 20, bgcolor: alpha('#FFFFFF', 0.2) }} />
+        <Tooltip title="Move Up">
+          <IconButton
+            size="small"
+            onClick={() => {
+              const idx = components.findIndex((c) => c.id === component.id);
+              if (idx > 0) {
+                const newComps = [...components];
+                [newComps[idx - 1], newComps[idx]] = [newComps[idx], newComps[idx - 1]];
+                setComponents(newComps);
+                addToHistory(newComps, globalStyles, textElements, imageElements, uploadedImages);
+              }
+            }}
+            sx={{ color: 'white', p: 0.5 }}
+          >
+            <Typography sx={{ fontSize: 14, lineHeight: 1 }}>↑</Typography>
+          </IconButton>
+        </Tooltip>
+        <Tooltip title="Move Down">
+          <IconButton
+            size="small"
+            onClick={() => {
+              const idx = components.findIndex((c) => c.id === component.id);
+              if (idx < components.length - 1) {
+                const newComps = [...components];
+                [newComps[idx], newComps[idx + 1]] = [newComps[idx + 1], newComps[idx]];
+                setComponents(newComps);
+                addToHistory(newComps, globalStyles, textElements, imageElements, uploadedImages);
+              }
+            }}
+            sx={{ color: 'white', p: 0.5 }}
+          >
+            <Typography sx={{ fontSize: 14, lineHeight: 1 }}>↓</Typography>
+          </IconButton>
+        </Tooltip>
+        <Tooltip title="Duplicate">
+          <IconButton
+            size="small"
+            onClick={() => {
+              const newComp = { ...component, id: Date.now().toString() };
+              const newComps = [...components, newComp];
+              setComponents(newComps);
+              addToHistory(newComps, globalStyles, textElements, imageElements, uploadedImages);
+              showSnackbar('Component duplicated', 'success');
+            }}
+            sx={{ color: G_START, p: 0.5 }}
+          >
+            <ContentCopy fontSize="small" />
+          </IconButton>
+        </Tooltip>
+        <Tooltip title="Delete">
+          <IconButton
+            size="small"
+            onClick={() => handleDeleteComponent(component.id)}
+            sx={{ color: '#ff4444', p: 0.5 }}
+          >
+            <Delete fontSize="small" />
+          </IconButton>
+        </Tooltip>
+      </Box>
+    );
+
+    return (
+      <Box
+        ref={canvasRef}
+        sx={{
+          width: previewWidth,
+          margin: '0 auto',
+          transition: 'all 0.3s ease',
+          color: globalStyles.textColor,
+          fontFamily: globalStyles.fontFamily,
+          minHeight: '100vh',
+          position: 'relative',
+          backgroundColor: globalStyles.backgroundColor,
+        }}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        onClick={() => {
+          setSelectedComponent(null);
+          setSelectedTextElement(null);
+          setSelectedImageElement(null);
+        }}
+      >
+        <div className="preview-container" style={{ position: 'relative', minHeight: '100vh' }}>
+          {textElements.map((element, index) => (
+            <motion.div
+              key={element.id}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: index * 0.05 }}
+              style={{
+                position: dragDropMode ? 'absolute' : 'relative',
+                left: dragDropMode ? `${element.position?.x || 50}px` : 'auto',
+                top: dragDropMode ? `${element.position?.y || 100}px` : 'auto',
+                cursor: dragDropMode ? 'move' : 'pointer',
+                ...element.styles,
+                ...(selectedTextElement?.id === element.id && !dragDropMode
+                  ? {
+                      outline: `2px solid ${G_START}`,
+                      outlineOffset: '4px',
+                      borderRadius: '4px',
+                      position: 'relative',
+                    }
+                  : {}),
+              }}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (!dragDropMode) {
+                  setSelectedTextElement(element);
+                  setSelectedComponent(null);
+                  setSelectedImageElement(null);
+                }
+              }}
+              onMouseDown={(e) => {
+                if (dragDropMode) {
+                  const startX = e.clientX;
+                  const startY = e.clientY;
+                  const startPos = { x: element.position?.x || 50, y: element.position?.y || 100 };
+                  const onMouseMove = (moveEvent) => {
+                    const dx = moveEvent.clientX - startX;
+                    const dy = moveEvent.clientY - startY;
+                    handleTextPositionChange(element.id, startPos.x + dx, startPos.y + dy);
+                  };
+                  const onMouseUp = () => {
+                    document.removeEventListener('mousemove', onMouseMove);
+                    document.removeEventListener('mouseup', onMouseUp);
+                  };
+                  document.addEventListener('mousemove', onMouseMove);
+                  document.addEventListener('mouseup', onMouseUp);
+                }
+              }}
+            >
+              {selectedTextElement?.id === element.id &&
+                !dragDropMode &&
+                renderTextFloatingToolbar(element)}
+              {editingText === element.id ? (
+                <TextField
+                  autoFocus
+                  fullWidth
+                  multiline={element.tag === 'p' || element.tag === 'div' || element.isNav}
+                  value={element.content}
+                  onChange={(e) => handleUpdateTextElement(element.id, { content: e.target.value })}
+                  onBlur={() => setEditingText(null)}
+                  onKeyPress={(e) => e.key === 'Enter' && setEditingText(null)}
+                  sx={{
+                    '& .MuiInputBase-root': {
+                      color: element.styles.color,
+                      fontSize: element.styles.fontSize,
+                      fontWeight: element.styles.fontWeight,
+                      fontFamily: element.styles.fontFamily,
+                      backgroundColor: 'rgba(0,0,0,0.1)',
+                    },
+                  }}
+                />
+              ) : element.isNav ? (
+                <Box
+                  sx={{
+                    display: 'flex',
+                    gap: '24px',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    padding: '12px 0',
+                    flexWrap: 'wrap',
+                  }}
+                >
+                  {element.content.split('|').map((item, idx) => (
+                    <Typography
+                      key={idx}
+                      component="a"
+                      href="#"
+                      sx={{
+                        color: globalStyles.textColor,
+                        textDecoration: 'none',
+                        padding: '8px 16px',
+                        borderRadius: globalStyles.borderRadius,
+                        transition: 'all 0.3s ease',
+                        fontSize: element.styles.fontSize,
+                        fontWeight: element.styles.fontWeight,
+                        '&:hover': {
+                          color: globalStyles.primaryColor,
+                          backgroundColor: alpha(globalStyles.primaryColor, 0.1),
+                        },
+                      }}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        if (!dragDropMode) setEditingText(element.id);
+                      }}
+                    >
+                      {item.trim()}
+                    </Typography>
+                  ))}
+                </Box>
+              ) : (
+                React.createElement(
+                  element.tag,
+                  {
+                    style: element.styles,
+                    onClick: (e) => {
+                      e.stopPropagation();
+                      if (!dragDropMode) setEditingText(element.id);
+                    },
+                    ...(element.tag === 'a' && { href: element.href || '#', target: '_blank' }),
+                  },
+                  element.content
+                )
+              )}
+            </motion.div>
+          ))}
+
+          {imageElements.map((element, index) => (
+            <motion.div
+              key={element.id}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: index * 0.05 }}
+              style={{
+                position: dragDropMode ? 'absolute' : 'relative',
+                left: dragDropMode ? `${element.position?.x || 50}px` : 'auto',
+                top: dragDropMode ? `${element.position?.y || 100}px` : 'auto',
+                cursor: dragDropMode ? 'move' : 'pointer',
+                display: 'inline-block',
+                ...(selectedImageElement?.id === element.id && !dragDropMode
+                  ? { outline: `2px solid ${G_MID}`, outlineOffset: '4px', borderRadius: '4px' }
+                  : {}),
+              }}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (!dragDropMode) {
+                  setSelectedImageElement(element);
+                  setSelectedComponent(null);
+                  setSelectedTextElement(null);
+                }
+              }}
+            >
+              {selectedImageElement?.id === element.id &&
+                !dragDropMode &&
+                renderImageFloatingToolbar(element)}
+              <img
+                src={element.imageUrl}
+                alt={element.alt}
+                style={{
+                  width: element.width,
+                  height: element.height,
+                  objectFit: element.objectFit,
+                  borderRadius: element.borderRadius,
+                  filter: element.styles?.filter,
+                  transform: element.styles?.transform,
+                  cursor: 'pointer',
+                  transition: 'all 0.3s ease',
+                  display: 'block',
+                }}
+              />
+            </motion.div>
+          ))}
+
+          {components.map((component, index) => (
+            <motion.div
+              key={component.id}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: index * 0.1 }}
+              onClick={(e) => {
+                e.stopPropagation();
+                setSelectedComponent(component);
+                setSelectedTextElement(null);
+                setSelectedImageElement(null);
+              }}
+              style={{
+                cursor: 'pointer',
+                position: 'relative',
+                ...component.styles,
+                ...(selectedComponent?.id === component.id
+                  ? { outline: `2px solid ${G_END}`, outlineOffset: '2px' }
+                  : {}),
+              }}
+            >
+              {selectedComponent?.id === component.id && renderComponentFloatingToolbar(component)}
+              {renderComponent(component)}
+            </motion.div>
+          ))}
+        </div>
+      </Box>
+    );
   };
 
-  const handleAddPage = () => {
-    const name = newPageName.trim() || `Page ${pages.length + 1}`;
-    const newPage = {
-      id: `page-${Date.now()}`,
-      name,
-      components: [],
-      textElements: [],
-      imageElements: [],
-    };
-    setPages((prev) => [...prev, newPage]);
-    setNewPageName('');
-    setAddPageDialogOpen(false);
-    handleSwitchPage(newPage.id);
-    showSnackbar(`Page "${name}" created`, 'success');
-  };
+  // ── Publish Modal ──
+  const renderPublishModal = () => (
+    <Dialog
+      open={publishModalOpen}
+      onClose={() => !isSavingToDB && setPublishModalOpen(false)}
+      maxWidth="md"
+      fullWidth
+      PaperProps={{
+        sx: {
+          bgcolor: '#0A0F1A',
+          backgroundImage: 'none',
+          borderRadius: '20px',
+          border: `1px solid ${alpha(G_START, 0.25)}`,
+          color: 'white',
+          overflow: 'hidden',
+        },
+      }}
+    >
+      <Box sx={{ height: 4, background: GRAD }} />
+      <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1.5, pt: 3 }}>
+        <Box
+          sx={{
+            width: 40,
+            height: 40,
+            borderRadius: '12px',
+            background: GRAD,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <Publish sx={{ fontSize: 20, color: 'white' }} />
+        </Box>
+        <Box>
+          <Typography variant="h6" sx={{ color: 'white', fontWeight: 700 }}>
+            Publish Your Website
+          </Typography>
+          <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.45) }}>
+            Your website will be saved to your account and given a unique URL
+          </Typography>
+        </Box>
+      </DialogTitle>
+      <DialogContent sx={{ pt: 2 }}>
+        <Stack spacing={3}>
+          <Box>
+            <Typography variant="subtitle2" sx={{ color: alpha('#FFFFFF', 0.7), mb: 1 }}>
+              Website Name *
+            </Typography>
+            <TextField
+              fullWidth
+              placeholder="e.g., My Awesome Portfolio"
+              value={websiteName}
+              onChange={(e) => setWebsiteName(e.target.value)}
+              disabled={isSavingToDB}
+              sx={{
+                '& .MuiInputBase-input': { color: 'white' },
+                '& .MuiOutlinedInput-notchedOutline': { borderColor: alpha('#FFFFFF', 0.2) },
+                '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: alpha(G_START, 0.6) },
+              }}
+            />
+          </Box>
+          <Box>
+            <Typography variant="subtitle2" sx={{ color: alpha('#FFFFFF', 0.7), mb: 1 }}>
+              Custom URL (optional)
+            </Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Typography sx={{ color: alpha('#FFFFFF', 0.5), fontSize: '14px' }}>
+                {window.location.origin}/p/
+              </Typography>
+              <TextField
+                placeholder="my-unique-url"
+                value={generatedSlug}
+                onChange={(e) => {
+                  const newSlug = e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '');
+                  setGeneratedSlug(newSlug);
+                  setSlugError('');
+                }}
+                disabled={isSavingToDB}
+                error={!!slugError}
+                helperText={slugError}
+                sx={{
+                  flex: 1,
+                  '& .MuiInputBase-input': { color: 'white' },
+                  '& .MuiOutlinedInput-notchedOutline': { borderColor: alpha('#FFFFFF', 0.2) },
+                  '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: alpha(G_START, 0.6) },
+                }}
+              />
+            </Box>
+            <Typography
+              variant="caption"
+              sx={{ color: alpha('#FFFFFF', 0.35), mt: 0.5, display: 'block' }}
+            >
+              Leave empty to auto-generate from website name.
+            </Typography>
+          </Box>
+          <Box
+            sx={{
+              mt: 2,
+              p: 2,
+              borderRadius: '12px',
+              bgcolor: alpha(G_START, 0.05),
+              border: `1px solid ${alpha(G_START, 0.15)}`,
+            }}
+          >
+            <Typography variant="subtitle2" sx={{ color: G_START, mb: 1.5 }}>
+              Publish Summary
+            </Typography>
+            <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+              <Box>
+                <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.5) }}>
+                  Components
+                </Typography>
+                <Typography variant="body2" sx={{ color: 'white', fontWeight: 600 }}>
+                  {components.length}
+                </Typography>
+              </Box>
+              <Box>
+                <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.5) }}>
+                  Text Elements
+                </Typography>
+                <Typography variant="body2" sx={{ color: 'white', fontWeight: 600 }}>
+                  {textElements.length}
+                </Typography>
+              </Box>
+              <Box>
+                <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.5) }}>
+                  Images
+                </Typography>
+                <Typography variant="body2" sx={{ color: 'white', fontWeight: 600 }}>
+                  {imageElements.length}
+                </Typography>
+              </Box>
+              <Box>
+                <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.5) }}>
+                  Uploaded Assets
+                </Typography>
+                <Typography variant="body2" sx={{ color: 'white', fontWeight: 600 }}>
+                  {uploadedImages.length}
+                </Typography>
+              </Box>
+            </Box>
+          </Box>
+          <Alert
+            severity="info"
+            sx={{
+              bgcolor: alpha(G_START, 0.1),
+              color: alpha('#FFFFFF', 0.8),
+              '& .MuiAlert-icon': { color: G_START },
+            }}
+          >
+            <Typography variant="caption">
+              Your website will be saved to your account database.
+            </Typography>
+          </Alert>
+        </Stack>
+      </DialogContent>
+      <DialogActions sx={{ px: 3, pb: 3, pt: 1, gap: 1.5 }}>
+        <Button
+          onClick={() => setPublishModalOpen(false)}
+          disabled={isSavingToDB}
+          sx={{ color: alpha('#FFFFFF', 0.6), '&:hover': { color: 'white' } }}
+        >
+          Cancel
+        </Button>
+        <Button
+          onClick={saveWebsiteToDatabase}
+          variant="contained"
+          disabled={isSavingToDB || !websiteName.trim()}
+          startIcon={isSavingToDB ? <CircularProgress size={18} /> : <Publish />}
+          sx={{
+            background: GRAD,
+            borderRadius: '10px',
+            fontWeight: 700,
+            px: 4,
+            '&:hover': { opacity: 0.9 },
+            '&:disabled': { opacity: 0.5 },
+          }}
+        >
+          {isSavingToDB ? 'Publishing...' : 'Publish Website'}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
 
-  const handleDeletePage = (pageId) => {
-    if (pages.length === 1) {
-      showSnackbar('Cannot delete the only page', 'warning');
-      return;
-    }
-    const remaining = pages.filter((p) => p.id !== pageId);
-    setPages(remaining);
-    if (activePageId === pageId) handleSwitchPage(remaining[0].id);
-    showSnackbar('Page deleted', 'info');
-  };
+  // ── Loading state ──
+  if (loading) {
+    return (
+      <Box
+        sx={{
+          bgcolor: '#080C14',
+          minHeight: '100vh',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+        }}
+      >
+        <CircularProgress sx={{ color: G_START }} />
+      </Box>
+    );
+  }
 
-  // ── Gallery helpers ───────────────────────────────────────────────────
-  const handleOpenProjectInEditor = (project) => {
-    if (setCurrentProject) setCurrentProject(project);
-    setComponents(project.components || []);
-    setTextElements(project.textElements || []);
-    setImageElements(project.imageElements || []);
-    setUploadedImages(project.uploadedImages || []);
-    if (project.styles) setGlobalStyles(project.styles);
-    if (project.pages) setPages(project.pages);
-    setActivePageId(project.pages?.[0]?.id || 'page-1');
-    setSavedProjectCard({ name: project.name, id: project.id, publishSlug: project.publishSlug });
-    setShowProjectsGallery(false);
-    showSnackbar(`Opened "${project.name}"`, 'success');
-  };
-
-  const handleDeleteProject = (projectId) => {
-    localStorage.removeItem(`project_${projectId}`);
-    const indexRaw = localStorage.getItem('projects_index');
-    if (indexRaw) {
-      const index = JSON.parse(indexRaw).filter((id) => id !== projectId);
-      localStorage.setItem('projects_index', JSON.stringify(index));
-    }
-    setAllProjects((prev) => prev.filter((p) => p.id !== projectId));
-    showSnackbar('Project deleted', 'info');
-  };
-
-  // ── Mock image helper ─────────────────────────────────────────────────
-  const handleAddMockImage = () => {
-    const url = mockImageUrl.trim();
-    if (!url) {
-      showSnackbar('Please enter an image URL', 'warning');
-      return;
-    }
-    const newImage = {
-      id: Date.now() + Math.random().toString(36).substr(2, 9),
-      url,
-      name: `mock-${Date.now()}.jpg`,
-      size: 0,
-      type: 'image/jpeg',
-      width: 800,
-      height: 600,
-      dateAdded: new Date().toISOString(),
-      isMock: true,
-    };
-    setUploadedImages((prev) => [...prev, newImage]);
-    setMockImageUrl('');
-    showSnackbar('Mock image added to library', 'success');
-  };
-
+  // ── Main render ──
   return (
     <Box
       sx={{ display: 'flex', height: '100vh', bgcolor: '#080C14', position: 'relative', zIndex: 0 }}
     >
-      {/* Left Sidebar - Components Library */}
+      {/* Left Sidebar */}
       <Drawer
         variant="permanent"
         sx={{
@@ -4235,20 +4884,13 @@ const DesignStudio = ({
               overflow: 'auto',
               scrollBehavior: 'smooth',
               scrollbarWidth: '2px',
-              scrollbarsHeight: '2px',
             }}
           >
             <Tabs
               value={activeTab}
               onChange={(e, v) => setActiveTab(v)}
               sx={{ mb: 2, minWidth: 'min-content' }}
-              style={{
-                width: '100%',
-                overflow: 'auto',
-                scrollBehavior: 'smooth',
-                scrollbarWidth: '2px',
-                scollbarHeight: '2px',
-              }}
+              style={{ width: '100%', overflow: 'auto', scrollBehavior: 'smooth' }}
             >
               <Tab label="Components" sx={{ color: 'white' }} />
               <Tab label="Text Styles" sx={{ color: 'white' }} />
@@ -4258,6 +4900,7 @@ const DesignStudio = ({
               <Tab label="Integrations" sx={{ color: 'white' }} />
             </Tabs>
           </div>
+
           {activeTab === 0 && (
             <>
               <Typography variant="h6" gutterBottom sx={{ color: 'white' }}>
@@ -4265,28 +4908,31 @@ const DesignStudio = ({
               </Typography>
               <Divider sx={{ mb: 2, borderColor: alpha('#FFFFFF', 0.1) }} />
               <Grid container spacing={1}>
-                {['hero', 'features', 'gallery', 'contact', 'pricing'].map((type) => (
-                  <Grid item xs={6} key={type}>
-                    <Button
-                      fullWidth
-                      variant="outlined"
-                      startIcon={getComponentIcon(type)}
-                      onClick={() => handleAddComponent(type)}
-                      sx={{
-                        justifyContent: 'flex-start',
-                        mb: 1,
-                        color: 'white',
-                        borderColor: alpha('#FFFFFF', 0.2),
-                        '&:hover': { borderColor: G_START, bgcolor: alpha(G_START, 0.1) },
-                      }}
-                    >
-                      {getComponentName(type)}
-                    </Button>
-                  </Grid>
-                ))}
+                {['hero', 'features', 'gallery', 'contact', 'pricing', 'logo', 'footer'].map(
+                  (type) => (
+                    <Grid item xs={6} key={type}>
+                      <Button
+                        fullWidth
+                        variant="outlined"
+                        startIcon={getComponentIcon(type)}
+                        onClick={() => handleAddComponent(type)}
+                        sx={{
+                          justifyContent: 'flex-start',
+                          mb: 1,
+                          color: 'white',
+                          borderColor: alpha('#FFFFFF', 0.2),
+                          '&:hover': { borderColor: G_START, bgcolor: alpha(G_START, 0.1) },
+                        }}
+                      >
+                        {getComponentName(type)}
+                      </Button>
+                    </Grid>
+                  )
+                )}
               </Grid>
             </>
           )}
+
           {activeTab === 1 && (
             <>
               <Box
@@ -4316,7 +4962,7 @@ const DesignStudio = ({
               <Typography variant="body2" sx={{ color: alpha('#FFFFFF', 0.7), mb: 2 }}>
                 {dragDropMode
                   ? 'Drag mode active - click and drag elements'
-                  : 'Click on text to edit, drag icon to move. Double-click component text to edit.'}
+                  : 'Click on text to edit, drag icon to move.'}
               </Typography>
               <Grid container spacing={1}>
                 {textStyles.map((style) => (
@@ -4351,14 +4997,13 @@ const DesignStudio = ({
               </Grid>
             </>
           )}
+
           {activeTab === 2 && (
             <>
               <Typography variant="h6" gutterBottom sx={{ color: 'white' }}>
                 Image Library
               </Typography>
               <Divider sx={{ mb: 2, borderColor: alpha('#FFFFFF', 0.1) }} />
-
-              {/* Image Style Presets */}
               <Typography variant="subtitle2" sx={{ color: alpha('#FFFFFF', 0.7), mb: 1, mt: 2 }}>
                 Image Size Presets
               </Typography>
@@ -4371,11 +5016,9 @@ const DesignStudio = ({
                       variant="outlined"
                       startIcon={<AspectRatio />}
                       onClick={() => {
-                        if (uploadedImages.length > 0) {
+                        if (uploadedImages.length > 0)
                           handleAddImageToCanvas(uploadedImages[0], style);
-                        } else {
-                          showSnackbar('Upload an image first', 'warning');
-                        }
+                        else showSnackbar('Upload an image first', 'warning');
                       }}
                       sx={{
                         color: 'white',
@@ -4388,8 +5031,6 @@ const DesignStudio = ({
                   </Grid>
                 ))}
               </Grid>
-
-              {/* Upload Mode Toggle */}
               <Box sx={{ mb: 2 }}>
                 <Typography variant="subtitle2" sx={{ color: alpha('#FFFFFF', 0.7), mb: 1 }}>
                   Upload Mode
@@ -4416,9 +5057,7 @@ const DesignStudio = ({
                   <ToggleButton value="production">Production (File)</ToggleButton>
                 </ToggleButtonGroup>
               </Box>
-
               {imageUploadMode === 'mock' ? (
-                /* ── Mock upload: paste any image URL ── */
                 <Box sx={{ mb: 3 }}>
                   <Typography
                     variant="caption"
@@ -4463,7 +5102,6 @@ const DesignStudio = ({
                   </Typography>
                 </Box>
               ) : (
-                /* ── Production upload: file picker, saves to DB ── */
                 <Box sx={{ mb: 3 }}>
                   <Typography
                     variant="caption"
@@ -4491,22 +5129,7 @@ const DesignStudio = ({
                       accept="image/*"
                       multiple
                       style={{ display: 'none' }}
-                      onChange={async (e) => {
-                        const files = Array.from(e.target.files);
-                        processImages(files);
-                        // Production: also POST to API
-                        if (files.length > 0) {
-                          try {
-                            const formData = new FormData();
-                            files.forEach((f) => formData.append('images', f));
-                            await axios.post('/api/images/upload', formData, {
-                              headers: { 'Content-Type': 'multipart/form-data' },
-                            });
-                          } catch (err) {
-                            console.warn('Image API upload failed (local copy kept):', err.message);
-                          }
-                        }
-                      }}
+                      onChange={handleImageUpload}
                     />
                     <Upload sx={{ fontSize: 48, color: alpha(G_START, 0.7), mb: 1 }} />
                     <Typography variant="body2" sx={{ color: 'white' }}>
@@ -4518,8 +5141,6 @@ const DesignStudio = ({
                   </Paper>
                 </Box>
               )}
-
-              {/* Image Grid */}
               <Typography variant="subtitle2" sx={{ color: alpha('#FFFFFF', 0.7), mb: 1 }}>
                 Uploaded Images ({uploadedImages.length})
               </Typography>
@@ -4604,9 +5225,172 @@ const DesignStudio = ({
               )}
             </>
           )}
+
           {activeTab === 3 && (
             <>
-              {/* ── Colour Palette Component ── */}
+              <Typography variant="h6" sx={{ color: 'white', mb: 2 }}>
+                Color Themes
+              </Typography>
+              <Typography variant="body2" sx={{ color: alpha('#FFFFFF', 0.7), mb: 2 }}>
+                Choose a pre-designed theme to instantly transform your website's look and feel
+              </Typography>
+              <Divider sx={{ mb: 2, borderColor: alpha('#FFFFFF', 0.1) }} />
+              <Grid container spacing={2}>
+                {colorThemes.map((theme) => (
+                  <Grid item xs={12} key={theme.id}>
+                    <Card
+                      sx={{
+                        bgcolor: alpha(theme.styles.backgroundColor, 0.5),
+                        border: `1px solid ${alpha(theme.styles.primaryColor, 0.3)}`,
+                        borderRadius: '12px',
+                        cursor: 'pointer',
+                        transition: 'all 0.3s ease',
+                        '&:hover': {
+                          transform: 'translateY(-4px)',
+                          borderColor: theme.styles.primaryColor,
+                          boxShadow: `0 8px 24px ${alpha(theme.styles.primaryColor, 0.2)}`,
+                        },
+                      }}
+                      onClick={() => applyColorTheme(theme)}
+                    >
+                      <Box
+                        sx={{
+                          height: 100,
+                          background: `linear-gradient(135deg, ${theme.styles.primaryColor}, ${theme.styles.secondaryColor})`,
+                          borderRadius: '12px 12px 0 0',
+                          position: 'relative',
+                          overflow: 'hidden',
+                        }}
+                      >
+                        <Box
+                          sx={{
+                            position: 'absolute',
+                            bottom: 8,
+                            left: 8,
+                            right: 8,
+                            display: 'flex',
+                            gap: 1,
+                          }}
+                        >
+                          <Box
+                            sx={{
+                              width: 40,
+                              height: 8,
+                              bgcolor: theme.styles.headingColor,
+                              borderRadius: '4px',
+                              opacity: 0.9,
+                            }}
+                          />
+                          <Box
+                            sx={{
+                              width: 60,
+                              height: 8,
+                              bgcolor: theme.styles.textColor,
+                              borderRadius: '4px',
+                              opacity: 0.6,
+                            }}
+                          />
+                        </Box>
+                        <Box
+                          sx={{
+                            position: 'absolute',
+                            top: 8,
+                            right: 8,
+                            width: 50,
+                            height: 20,
+                            bgcolor: theme.styles.primaryColor,
+                            borderRadius: '10px',
+                          }}
+                        />
+                      </Box>
+                      <CardContent sx={{ p: 2 }}>
+                        <Typography
+                          variant="subtitle1"
+                          sx={{ color: 'white', fontWeight: 'bold', mb: 0.5 }}
+                        >
+                          {theme.name}
+                        </Typography>
+                        <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.6) }}>
+                          {theme.description}
+                        </Typography>
+                        <Box sx={{ display: 'flex', gap: 1, mt: 1.5 }}>
+                          <Box
+                            sx={{
+                              width: 20,
+                              height: 20,
+                              bgcolor: theme.styles.primaryColor,
+                              borderRadius: '4px',
+                              border: '1px solid rgba(255,255,255,0.2)',
+                            }}
+                          />
+                          <Box
+                            sx={{
+                              width: 20,
+                              height: 20,
+                              bgcolor: theme.styles.secondaryColor,
+                              borderRadius: '4px',
+                              border: '1px solid rgba(255,255,255,0.2)',
+                            }}
+                          />
+                          <Box
+                            sx={{
+                              width: 20,
+                              height: 20,
+                              bgcolor: theme.styles.accentColor,
+                              borderRadius: '4px',
+                              border: '1px solid rgba(255,255,255,0.2)',
+                            }}
+                          />
+                          <Box
+                            sx={{
+                              width: 20,
+                              height: 20,
+                              bgcolor: theme.styles.backgroundColor,
+                              borderRadius: '4px',
+                              border: '1px solid rgba(255,255,255,0.2)',
+                            }}
+                          />
+                          <Box
+                            sx={{
+                              width: 20,
+                              height: 20,
+                              bgcolor: theme.styles.textColor,
+                              borderRadius: '4px',
+                              border: '1px solid rgba(255,255,255,0.2)',
+                            }}
+                          />
+                        </Box>
+                      </CardContent>
+                      <CardActions sx={{ p: 2, pt: 0 }}>
+                        <Button
+                          fullWidth
+                          size="small"
+                          variant="outlined"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            applyColorTheme(theme);
+                          }}
+                          sx={{
+                            color: 'white',
+                            borderColor: alpha(theme.styles.primaryColor, 0.5),
+                            '&:hover': {
+                              borderColor: theme.styles.primaryColor,
+                              bgcolor: alpha(theme.styles.primaryColor, 0.1),
+                            },
+                          }}
+                        >
+                          Apply Theme
+                        </Button>
+                      </CardActions>
+                    </Card>
+                  </Grid>
+                ))}
+              </Grid>
+            </>
+          )}
+
+          {activeTab === 4 && (
+            <>
               <Box sx={{ mb: 2 }}>
                 <Box
                   sx={{
@@ -4638,7 +5422,6 @@ const DesignStudio = ({
                   Click any swatch to assign it to a site colour role
                 </Typography>
               </Box>
-
               {paletteComponentOpen && (
                 <Box
                   sx={{
@@ -4649,17 +5432,19 @@ const DesignStudio = ({
                     border: `1px solid ${alpha('#FFFFFF', 0.08)}`,
                   }}
                 >
-                  {/* Live colour role chips */}
                   <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 2 }}>
                     {[
-                      { label: 'Primary', key: 'primaryColor' },
-                      { label: 'Secondary', key: 'secondaryColor' },
-                      { label: 'Accent', key: 'accentColor' },
-                      { label: 'Background', key: 'backgroundColor' },
-                      { label: 'Text', key: 'textColor' },
-                      { label: 'Heading', key: 'headingColor' },
-                    ].map(({ label, key }) => (
-                      <Tooltip key={key} title={`${label}: ${globalStyles[key]}`}>
+                      'primaryColor',
+                      'secondaryColor',
+                      'accentColor',
+                      'backgroundColor',
+                      'textColor',
+                      'headingColor',
+                    ].map((key) => (
+                      <Tooltip
+                        key={key}
+                        title={`${key.replace('Color', '')}: ${globalStyles[key]}`}
+                      >
                         <Box
                           sx={{
                             display: 'flex',
@@ -4688,14 +5473,12 @@ const DesignStudio = ({
                             variant="caption"
                             sx={{ color: alpha('#FFFFFF', 0.7), fontSize: '0.65rem' }}
                           >
-                            {label}
+                            {key.replace('Color', '')}
                           </Typography>
                         </Box>
                       </Tooltip>
                     ))}
                   </Box>
-
-                  {/* All palettes as swatch grids with assign-on-click */}
                   {colorPalettes.map((palette) => {
                     const roles = [
                       'primaryColor',
@@ -4773,36 +5556,7 @@ const DesignStudio = ({
                   })}
                 </Box>
               )}
-
-              {/* Collapsed quick-apply row when closed */}
-              {!paletteComponentOpen && (
-                <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', mb: 2 }}>
-                  {colorPalettes.slice(0, 4).map((palette) => (
-                    <Tooltip key={palette.name} title={`Apply ${palette.name}`}>
-                      <Box
-                        onClick={() => applyColorPalette(palette)}
-                        sx={{
-                          display: 'flex',
-                          gap: '2px',
-                          cursor: 'pointer',
-                          borderRadius: '6px',
-                          overflow: 'hidden',
-                          border: `1px solid ${alpha('#FFFFFF', 0.1)}`,
-                          '&:hover': { opacity: 0.85 },
-                        }}
-                      >
-                        {palette.colors.slice(0, 3).map((c, i) => (
-                          <Box key={i} sx={{ width: 16, height: 24, bgcolor: c }} />
-                        ))}
-                      </Box>
-                    </Tooltip>
-                  ))}
-                </Box>
-              )}
-
               <Divider sx={{ mb: 2, borderColor: alpha('#FFFFFF', 0.1) }} />
-
-              {/* Full palette list (original) */}
               <Typography variant="subtitle2" sx={{ color: alpha('#FFFFFF', 0.6), mb: 1 }}>
                 All Palettes
               </Typography>
@@ -4840,299 +5594,55 @@ const DesignStudio = ({
                   </Grid>
                 ))}
               </Grid>
-
               <Typography variant="h6" gutterBottom sx={{ color: 'white', mt: 3 }}>
                 Custom Colors
               </Typography>
               <Divider sx={{ mb: 2, borderColor: alpha('#FFFFFF', 0.1) }} />
-
               <Stack spacing={2}>
-                <Button
-                  fullWidth
-                  variant="outlined"
-                  startIcon={<Palette />}
-                  onClick={(e) => handleColorPickerOpen(e, 'global', 'primaryColor')}
-                  sx={{ color: 'white', borderColor: alpha('#FFFFFF', 0.2) }}
-                >
-                  Primary Color
-                  <Box
+                {[
+                  'primaryColor',
+                  'secondaryColor',
+                  'accentColor',
+                  'backgroundColor',
+                  'textColor',
+                  'headingColor',
+                ].map((key) => (
+                  <Button
+                    key={key}
+                    fullWidth
+                    variant="outlined"
+                    startIcon={<Palette />}
+                    onClick={(e) => handleColorPickerOpen(e, 'global', key)}
                     sx={{
-                      ml: 1,
-                      width: 24,
-                      height: 24,
-                      bgcolor: globalStyles.primaryColor,
-                      borderRadius: '4px',
+                      color: 'white',
+                      borderColor: alpha('#FFFFFF', 0.2),
+                      justifyContent: 'space-between',
                     }}
-                  />
-                </Button>
-                <Button
-                  fullWidth
-                  variant="outlined"
-                  startIcon={<Palette />}
-                  onClick={(e) => handleColorPickerOpen(e, 'global', 'secondaryColor')}
-                  sx={{ color: 'white', borderColor: alpha('#FFFFFF', 0.2) }}
-                >
-                  Secondary Color
-                  <Box
-                    sx={{
-                      ml: 1,
-                      width: 24,
-                      height: 24,
-                      bgcolor: globalStyles.secondaryColor,
-                      borderRadius: '4px',
-                    }}
-                  />
-                </Button>
-                <Button
-                  fullWidth
-                  variant="outlined"
-                  startIcon={<Palette />}
-                  onClick={(e) => handleColorPickerOpen(e, 'global', 'accentColor')}
-                  sx={{ color: 'white', borderColor: alpha('#FFFFFF', 0.2) }}
-                >
-                  Accent Color
-                  <Box
-                    sx={{
-                      ml: 1,
-                      width: 24,
-                      height: 24,
-                      bgcolor: globalStyles.accentColor,
-                      borderRadius: '4px',
-                    }}
-                  />
-                </Button>
-                <Button
-                  fullWidth
-                  variant="outlined"
-                  startIcon={<Palette />}
-                  onClick={(e) => handleColorPickerOpen(e, 'global', 'backgroundColor')}
-                  sx={{ color: 'white', borderColor: alpha('#FFFFFF', 0.2) }}
-                >
-                  Background Color
-                  <Box
-                    sx={{
-                      ml: 1,
-                      width: 24,
-                      height: 24,
-                      bgcolor: globalStyles.backgroundColor,
-                      borderRadius: '4px',
-                    }}
-                  />
-                </Button>
-                <Button
-                  fullWidth
-                  variant="outlined"
-                  startIcon={<Palette />}
-                  onClick={(e) => handleColorPickerOpen(e, 'global', 'textColor')}
-                  sx={{ color: 'white', borderColor: alpha('#FFFFFF', 0.2) }}
-                >
-                  Text Color
-                  <Box
-                    sx={{
-                      ml: 1,
-                      width: 24,
-                      height: 24,
-                      bgcolor: globalStyles.textColor,
-                      borderRadius: '4px',
-                    }}
-                  />
-                </Button>
-                <Button
-                  fullWidth
-                  variant="outlined"
-                  startIcon={<Palette />}
-                  onClick={(e) => handleColorPickerOpen(e, 'global', 'headingColor')}
-                  sx={{ color: 'white', borderColor: alpha('#FFFFFF', 0.2) }}
-                >
-                  Heading Color
-                  <Box
-                    sx={{
-                      ml: 1,
-                      width: 24,
-                      height: 24,
-                      bgcolor: globalStyles.headingColor,
-                      borderRadius: '4px',
-                    }}
-                  />
-                </Button>
+                  >
+                    {key.replace('Color', '')} Color
+                    <Box
+                      sx={{
+                        ml: 1,
+                        width: 24,
+                        height: 24,
+                        bgcolor: globalStyles[key],
+                        borderRadius: '4px',
+                        border: '1px solid rgba(255,255,255,0.2)',
+                      }}
+                    />
+                  </Button>
+                ))}
               </Stack>
             </>
           )}
-          {activeTab === 4 && (
-            <>
-              <Typography variant="h6" gutterBottom sx={{ color: 'white' }}>
-                Color Themes
-              </Typography>
-              <Typography variant="body2" sx={{ color: alpha('#FFFFFF', 0.7), mb: 2 }}>
-                Choose a pre-designed theme to instantly transform your website's look and feel
-              </Typography>
-              <Divider sx={{ mb: 2, borderColor: alpha('#FFFFFF', 0.1) }} />
 
-              <Grid container spacing={2}>
-                {colorThemes.map((theme) => (
-                  <Grid item xs={12} key={theme.id}>
-                    <Card
-                      sx={{
-                        bgcolor: alpha(theme.styles.backgroundColor, 0.5),
-                        border: `1px solid ${alpha(theme.styles.primaryColor, 0.3)}`,
-                        borderRadius: '12px',
-                        cursor: 'pointer',
-                        transition: 'all 0.3s ease',
-                        '&:hover': {
-                          transform: 'translateY(-4px)',
-                          borderColor: theme.styles.primaryColor,
-                          boxShadow: `0 8px 24px ${alpha(theme.styles.primaryColor, 0.2)}`,
-                        },
-                      }}
-                      onClick={() => applyColorTheme(theme, setGlobalStyles, showSnackbar)}
-                    >
-                      {/* Theme Preview */}
-                      <Box
-                        sx={{
-                          height: 100,
-                          background: `linear-gradient(135deg, ${theme.styles.primaryColor}, ${theme.styles.secondaryColor})`,
-                          borderRadius: '12px 12px 0 0',
-                          position: 'relative',
-                          overflow: 'hidden',
-                        }}
-                      >
-                        {/* Preview elements */}
-                        <Box
-                          sx={{
-                            position: 'absolute',
-                            bottom: 8,
-                            left: 8,
-                            right: 8,
-                            display: 'flex',
-                            gap: 1,
-                          }}
-                        >
-                          <Box
-                            sx={{
-                              width: 40,
-                              height: 8,
-                              bgcolor: theme.styles.headingColor,
-                              borderRadius: '4px',
-                              opacity: 0.9,
-                            }}
-                          />
-                          <Box
-                            sx={{
-                              width: 60,
-                              height: 8,
-                              bgcolor: theme.styles.textColor,
-                              borderRadius: '4px',
-                              opacity: 0.6,
-                            }}
-                          />
-                        </Box>
-                        <Box
-                          sx={{
-                            position: 'absolute',
-                            top: 8,
-                            right: 8,
-                            width: 50,
-                            height: 20,
-                            bgcolor: theme.styles.primaryColor,
-                            borderRadius: '10px',
-                          }}
-                        />
-                      </Box>
-
-                      <CardContent sx={{ p: 2 }}>
-                        <Typography
-                          variant="subtitle1"
-                          sx={{ color: 'white', fontWeight: 'bold', mb: 0.5 }}
-                        >
-                          {theme.name}
-                        </Typography>
-                        <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.6) }}>
-                          {theme.description}
-                        </Typography>
-
-                        {/* Color swatches */}
-                        <Box sx={{ display: 'flex', gap: 1, mt: 1.5 }}>
-                          <Box
-                            sx={{
-                              width: 20,
-                              height: 20,
-                              bgcolor: theme.styles.primaryColor,
-                              borderRadius: '4px',
-                              border: '1px solid rgba(255,255,255,0.2)',
-                            }}
-                          />
-                          <Box
-                            sx={{
-                              width: 20,
-                              height: 20,
-                              bgcolor: theme.styles.secondaryColor,
-                              borderRadius: '4px',
-                              border: '1px solid rgba(255,255,255,0.2)',
-                            }}
-                          />
-                          <Box
-                            sx={{
-                              width: 20,
-                              height: 20,
-                              bgcolor: theme.styles.accentColor,
-                              borderRadius: '4px',
-                              border: '1px solid rgba(255,255,255,0.2)',
-                            }}
-                          />
-                          <Box
-                            sx={{
-                              width: 20,
-                              height: 20,
-                              bgcolor: theme.styles.backgroundColor,
-                              borderRadius: '4px',
-                              border: '1px solid rgba(255,255,255,0.2)',
-                            }}
-                          />
-                          <Box
-                            sx={{
-                              width: 20,
-                              height: 20,
-                              bgcolor: theme.styles.textColor,
-                              borderRadius: '4px',
-                              border: '1px solid rgba(255,255,255,0.2)',
-                            }}
-                          />
-                        </Box>
-                      </CardContent>
-
-                      <CardActions sx={{ p: 2, pt: 0 }}>
-                        <Button
-                          fullWidth
-                          size="small"
-                          variant="outlined"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            applyColorTheme(theme, setGlobalStyles, showSnackbar);
-                          }}
-                          sx={{
-                            color: 'white',
-                            borderColor: alpha(theme.styles.primaryColor, 0.5),
-                            '&:hover': {
-                              borderColor: theme.styles.primaryColor,
-                              bgcolor: alpha(theme.styles.primaryColor, 0.1),
-                            },
-                          }}
-                        >
-                          Apply Theme
-                        </Button>
-                      </CardActions>
-                    </Card>
-                  </Grid>
-                ))}
-              </Grid>
-            </>
-          )}
           {activeTab === 5 && (
             <IntegrationsPanel
               showSnackbar={showSnackbar}
               projectId={currentProject?.id || savedProjectCard?.id}
             />
           )}
+
           <Typography variant="h6" gutterBottom sx={{ color: 'white', mt: 3 }}>
             Global Styles
           </Typography>
@@ -5182,7 +5692,6 @@ const DesignStudio = ({
                   size="small"
                   sx={{ color: G_START }}
                 />
-
                 <Typography variant="body2" gutterBottom>
                   Spacing
                 </Typography>
@@ -5194,7 +5703,6 @@ const DesignStudio = ({
                   size="small"
                   sx={{ color: G_START }}
                 />
-
                 <FormControl fullWidth size="small">
                   <InputLabel sx={{ color: alpha('#FFFFFF', 0.7) }}>Button Style</InputLabel>
                   <Select
@@ -5210,7 +5718,6 @@ const DesignStudio = ({
                     <MenuItem value="square">Square</MenuItem>
                   </Select>
                 </FormControl>
-
                 <FormControlLabel
                   control={
                     <Switch
@@ -5222,7 +5729,6 @@ const DesignStudio = ({
                   label="Enable Animations"
                   sx={{ color: 'white' }}
                 />
-
                 <Typography variant="body2" gutterBottom>
                   Canvas Scale
                 </Typography>
@@ -5273,7 +5779,7 @@ const DesignStudio = ({
         </Box>
       </Drawer>
 
-      {/* Main Content - Preview Area */}
+      {/* Main Content */}
       <Box
         sx={{
           flexGrow: 1,
@@ -5295,9 +5801,7 @@ const DesignStudio = ({
             <Typography variant="h6" sx={{ flexGrow: 1, color: 'white' }}>
               {currentProject?.name || 'Design Studio'}
             </Typography>
-
-            {/* Auto-save indicator */}
-            {autoSaveStatus !== 'idle' && (
+            {autoSaveStatus !== 'idle' && autoSaveEnabled && (
               <Chip
                 size="small"
                 label={autoSaveStatus === 'saving' ? 'Auto-saving…' : '✓ Saved'}
@@ -5309,7 +5813,39 @@ const DesignStudio = ({
                 }}
               />
             )}
-
+            <Tooltip
+              title={autoSaveEnabled ? 'Auto-save is on (every 10 min)' : 'Auto-save is off'}
+            >
+              <FormControlLabel
+                sx={{ mr: 2, ml: 0 }}
+                control={
+                  <Switch
+                    size="small"
+                    checked={autoSaveEnabled}
+                    onChange={(e) => {
+                      const enabled = e.target.checked;
+                      setAutoSaveEnabled(enabled);
+                      if (!enabled) setAutoSaveStatus('idle');
+                      showSnackbar(
+                        enabled ? 'Auto-save turned on' : 'Auto-save turned off',
+                        enabled ? 'success' : 'info'
+                      );
+                    }}
+                    sx={{
+                      '& .MuiSwitch-switchBase.Mui-checked': { color: G_START },
+                      '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': {
+                        backgroundColor: G_START,
+                      },
+                    }}
+                  />
+                }
+                label={
+                  <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.7) }}>
+                    Auto-save
+                  </Typography>
+                }
+              />
+            </Tooltip>
             <Box sx={{ display: 'flex', gap: 1, mr: 2 }}>
               <Tooltip title="Undo">
                 <IconButton
@@ -5358,7 +5894,6 @@ const DesignStudio = ({
                 </IconButton>
               </Tooltip>
             </Box>
-
             <Tooltip title="Code View">
               <IconButton
                 onClick={() => setShowCode(!showCode)}
@@ -5368,16 +5903,35 @@ const DesignStudio = ({
                 <Code />
               </IconButton>
             </Tooltip>
-
+            <Tooltip title={dragDropMode ? 'Switch to Select Mode' : 'Switch to Drag-Drop Mode'}>
+              <IconButton
+                onClick={() => {
+                  setDragDropMode(!dragDropMode);
+                  showSnackbar(
+                    dragDropMode
+                      ? 'Select mode: click elements to edit'
+                      : 'Drag-drop mode: drag elements to reposition',
+                    'info'
+                  );
+                }}
+                sx={{
+                  color: dragDropMode ? G_MID : alpha('#FFFFFF', 0.5),
+                  mr: 1,
+                  border: `1px solid ${dragDropMode ? G_MID : 'transparent'}`,
+                  borderRadius: '8px',
+                }}
+              >
+                {dragDropMode ? <OpenWith fontSize="small" /> : <DragIndicator fontSize="small" />}
+              </IconButton>
+            </Tooltip>
             <Button
               variant="outlined"
-              startIcon={<PhotoLibrary />}
+              startIcon={<FolderOpen />}
               onClick={() => setShowProjectsGallery(true)}
               sx={{ mr: 1, color: 'white', borderColor: alpha('#FFFFFF', 0.2) }}
             >
               My Projects
             </Button>
-
             <Button
               variant="outlined"
               startIcon={<Preview />}
@@ -5386,7 +5940,6 @@ const DesignStudio = ({
             >
               Preview
             </Button>
-
             <Button
               variant="contained"
               startIcon={saving ? <CircularProgress size={20} /> : <Save />}
@@ -5396,7 +5949,6 @@ const DesignStudio = ({
             >
               Save
             </Button>
-
             <Button
               variant="contained"
               startIcon={publishing ? <CircularProgress size={20} /> : <Publish />}
@@ -5409,7 +5961,6 @@ const DesignStudio = ({
           </Toolbar>
         </AppBar>
 
-        {/* ── Page Tabs Bar ──────────────────────────────────────── */}
         <Box
           sx={{
             display: 'flex',
@@ -5483,13 +6034,7 @@ const DesignStudio = ({
                   Copy Code
                 </Button>
               </Box>
-              <Box
-                sx={{
-                  p: 2,
-                  maxHeight: 'calc(100vh - 200px)',
-                  overflow: 'auto',
-                }}
-              >
+              <Box sx={{ p: 2, maxHeight: 'calc(100vh - 200px)', overflow: 'auto' }}>
                 <pre
                   style={{
                     color: '#E0E0E0',
@@ -5524,7 +6069,7 @@ const DesignStudio = ({
         )}
       </Box>
 
-      {/* Right Sidebar - Component/Image Properties */}
+      {/* Right Sidebar */}
       <Drawer
         variant="permanent"
         anchor="right"
@@ -5549,6 +6094,44 @@ const DesignStudio = ({
         }}
       >
         <Toolbar />
+        {(selectedComponent || selectedTextElement || selectedImageElement) && (
+          <Box sx={{ height: 4, background: GRAD }} />
+        )}
+        {(selectedComponent || selectedTextElement || selectedImageElement) && (
+          <Box
+            sx={{
+              px: 2,
+              py: 1.5,
+              bgcolor: alpha(G_START, 0.07),
+              borderBottom: `1px solid ${alpha('#FFFFFF', 0.08)}`,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 1,
+            }}
+          >
+            <EditIcon sx={{ color: G_START, fontSize: 18 }} />
+            <Typography variant="subtitle2" sx={{ color: G_START, fontWeight: 700, flex: 1 }}>
+              {selectedComponent
+                ? `Edit ${getComponentName(selectedComponent.type)}`
+                : selectedTextElement
+                  ? 'Edit Text Element'
+                  : 'Edit Image'}
+            </Typography>
+            <Tooltip title="Deselect (Esc)">
+              <IconButton
+                size="small"
+                onClick={() => {
+                  setSelectedComponent(null);
+                  setSelectedTextElement(null);
+                  setSelectedImageElement(null);
+                }}
+                sx={{ color: alpha('#FFFFFF', 0.5), '&:hover': { color: '#ff4444' } }}
+              >
+                <Close fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          </Box>
+        )}
         <Box sx={{ p: 2, overflow: 'auto', height: 'calc(100% - 64px)' }}>
           {selectedComponent && (
             <>
@@ -5572,7 +6155,347 @@ const DesignStudio = ({
                 </IconButton>
               </Box>
               <Divider sx={{ mb: 2, borderColor: alpha('#FFFFFF', 0.1) }} />
-
+              <Typography variant="subtitle2" sx={{ color: alpha('#FFFFFF', 0.7), mb: 1 }}>
+                Appearance
+              </Typography>
+              <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<Palette />}
+                  onClick={(e) => handleColorPickerOpen(e, 'component', 'backgroundColor')}
+                  sx={{ color: 'white', borderColor: alpha('#FFFFFF', 0.2), flex: 1 }}
+                >
+                  Background
+                  <Box
+                    sx={{
+                      ml: 1,
+                      width: 16,
+                      height: 16,
+                      borderRadius: '4px',
+                      bgcolor: selectedComponent.styles?.backgroundColor || 'transparent',
+                      border: `1px solid ${alpha('#FFFFFF', 0.3)}`,
+                    }}
+                  />
+                </Button>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<FormatColorFill />}
+                  onClick={(e) => handleColorPickerOpen(e, 'component', 'color')}
+                  sx={{ color: 'white', borderColor: alpha('#FFFFFF', 0.2), flex: 1 }}
+                >
+                  Text
+                  <Box
+                    sx={{
+                      ml: 1,
+                      width: 16,
+                      height: 16,
+                      borderRadius: '4px',
+                      bgcolor: selectedComponent.styles?.color || globalStyles.textColor,
+                      border: `1px solid ${alpha('#FFFFFF', 0.3)}`,
+                    }}
+                  />
+                </Button>
+              </Box>
+              <Divider sx={{ mb: 2, borderColor: alpha('#FFFFFF', 0.1) }} />
+              {selectedComponent.type === 'logo' && (
+                <>
+                  <TextField
+                    fullWidth
+                    label="Logo Text"
+                    value={selectedComponent.content?.text || ''}
+                    onChange={(e) =>
+                      handleUpdateComponentContent(selectedComponent.id, 'text', e.target.value)
+                    }
+                    sx={{
+                      mb: 2,
+                      input: { color: 'white' },
+                      label: { color: alpha('#FFFFFF', 0.7) },
+                    }}
+                  />
+                  <TextField
+                    fullWidth
+                    label="Tagline"
+                    value={selectedComponent.content?.tagline || ''}
+                    onChange={(e) =>
+                      handleUpdateComponentContent(selectedComponent.id, 'tagline', e.target.value)
+                    }
+                    sx={{
+                      mb: 2,
+                      input: { color: 'white' },
+                      label: { color: alpha('#FFFFFF', 0.7) },
+                    }}
+                  />
+                  <FormControl fullWidth size="small" sx={{ mb: 2 }}>
+                    <InputLabel sx={{ color: alpha('#FFFFFF', 0.7) }}>Logo Size</InputLabel>
+                    <Select
+                      value={selectedComponent.content?.size || 'medium'}
+                      onChange={(e) =>
+                        handleUpdateComponentContent(selectedComponent.id, 'size', e.target.value)
+                      }
+                      label="Logo Size"
+                      sx={{
+                        color: 'white',
+                        '& .MuiOutlinedInput-notchedOutline': {
+                          borderColor: alpha('#FFFFFF', 0.2),
+                        },
+                      }}
+                    >
+                      <MenuItem value="small">Small</MenuItem>
+                      <MenuItem value="medium">Medium</MenuItem>
+                      <MenuItem value="large">Large</MenuItem>
+                    </Select>
+                  </FormControl>
+                  <Typography
+                    variant="subtitle2"
+                    sx={{ color: alpha('#FFFFFF', 0.7), mb: 1, mt: 2 }}
+                  >
+                    Logo Image
+                  </Typography>
+                  <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
+                    <Button
+                      variant="outlined"
+                      startIcon={<ImageIcon />}
+                      onClick={() => setImageUploadDialogOpen(true)}
+                      sx={{ color: 'white', borderColor: alpha('#FFFFFF', 0.2) }}
+                    >
+                      Select Image
+                    </Button>
+                    {selectedComponent.content?.image && (
+                      <Button
+                        variant="outlined"
+                        color="error"
+                        startIcon={<Delete />}
+                        onClick={() =>
+                          handleUpdateComponentContent(selectedComponent.id, 'image', null)
+                        }
+                        sx={{ color: '#ff4444', borderColor: '#ff4444' }}
+                      >
+                        Remove
+                      </Button>
+                    )}
+                  </Box>
+                </>
+              )}
+              {selectedComponent.type === 'footer' && (
+                <>
+                  <TextField
+                    fullWidth
+                    label="Company Name"
+                    value={selectedComponent.content?.companyName || ''}
+                    onChange={(e) =>
+                      handleUpdateComponentContent(
+                        selectedComponent.id,
+                        'companyName',
+                        e.target.value
+                      )
+                    }
+                    sx={{
+                      mb: 2,
+                      input: { color: 'white' },
+                      label: { color: alpha('#FFFFFF', 0.7) },
+                    }}
+                  />
+                  <TextField
+                    fullWidth
+                    label="Tagline"
+                    value={selectedComponent.content?.tagline || ''}
+                    onChange={(e) =>
+                      handleUpdateComponentContent(selectedComponent.id, 'tagline', e.target.value)
+                    }
+                    sx={{
+                      mb: 2,
+                      input: { color: 'white' },
+                      label: { color: alpha('#FFFFFF', 0.7) },
+                    }}
+                  />
+                  <Typography variant="subtitle2" sx={{ color: alpha('#FFFFFF', 0.7), mb: 1 }}>
+                    Links
+                  </Typography>
+                  {selectedComponent.content?.links?.map((link, idx) => (
+                    <Paper
+                      key={idx}
+                      sx={{
+                        p: 2,
+                        mb: 2,
+                        bgcolor: alpha('#FFFFFF', 0.05),
+                        borderRadius: globalStyles.borderRadius,
+                      }}
+                    >
+                      <TextField
+                        fullWidth
+                        size="small"
+                        label="Label"
+                        value={link.label || ''}
+                        onChange={(e) => {
+                          const newLinks = [...selectedComponent.content.links];
+                          newLinks[idx] = { ...newLinks[idx], label: e.target.value };
+                          handleUpdateComponentContent(selectedComponent.id, 'links', newLinks);
+                        }}
+                        sx={{ mb: 1, input: { color: 'white' } }}
+                      />
+                      <TextField
+                        fullWidth
+                        size="small"
+                        label="URL"
+                        value={link.url || ''}
+                        onChange={(e) => {
+                          const newLinks = [...selectedComponent.content.links];
+                          newLinks[idx] = { ...newLinks[idx], url: e.target.value };
+                          handleUpdateComponentContent(selectedComponent.id, 'links', newLinks);
+                        }}
+                        sx={{ mb: 1, input: { color: 'white' } }}
+                      />
+                      <Button
+                        size="small"
+                        color="error"
+                        startIcon={<Delete />}
+                        onClick={() => handleDeleteComponentItem(selectedComponent.id, 'link', idx)}
+                      >
+                        Delete
+                      </Button>
+                    </Paper>
+                  ))}
+                  <Button
+                    fullWidth
+                    variant="outlined"
+                    startIcon={<Add />}
+                    onClick={() => handleAddComponentItem(selectedComponent.id, 'link')}
+                    sx={{ mt: 1, color: 'white', borderColor: alpha('#FFFFFF', 0.2) }}
+                  >
+                    Add Link
+                  </Button>
+                  <Typography
+                    variant="subtitle2"
+                    sx={{ color: alpha('#FFFFFF', 0.7), mb: 1, mt: 2 }}
+                  >
+                    Social Links
+                  </Typography>
+                  {selectedComponent.content?.socialLinks?.map((social, idx) => (
+                    <Paper
+                      key={idx}
+                      sx={{
+                        p: 2,
+                        mb: 2,
+                        bgcolor: alpha('#FFFFFF', 0.05),
+                        borderRadius: globalStyles.borderRadius,
+                      }}
+                    >
+                      <TextField
+                        fullWidth
+                        size="small"
+                        label="Platform"
+                        value={social.platform || ''}
+                        onChange={(e) => {
+                          const newSocial = [...selectedComponent.content.socialLinks];
+                          newSocial[idx] = { ...newSocial[idx], platform: e.target.value };
+                          handleUpdateComponentContent(
+                            selectedComponent.id,
+                            'socialLinks',
+                            newSocial
+                          );
+                        }}
+                        sx={{ mb: 1, input: { color: 'white' } }}
+                      />
+                      <TextField
+                        fullWidth
+                        size="small"
+                        label="URL"
+                        value={social.url || ''}
+                        onChange={(e) => {
+                          const newSocial = [...selectedComponent.content.socialLinks];
+                          newSocial[idx] = { ...newSocial[idx], url: e.target.value };
+                          handleUpdateComponentContent(
+                            selectedComponent.id,
+                            'socialLinks',
+                            newSocial
+                          );
+                        }}
+                        sx={{ mb: 1, input: { color: 'white' } }}
+                      />
+                      <Button
+                        size="small"
+                        color="error"
+                        startIcon={<Delete />}
+                        onClick={() =>
+                          handleDeleteComponentItem(selectedComponent.id, 'social', idx)
+                        }
+                      >
+                        Delete
+                      </Button>
+                    </Paper>
+                  ))}
+                  <Button
+                    fullWidth
+                    variant="outlined"
+                    startIcon={<Add />}
+                    onClick={() => handleAddComponentItem(selectedComponent.id, 'social')}
+                    sx={{ mt: 1, color: 'white', borderColor: alpha('#FFFFFF', 0.2) }}
+                  >
+                    Add Social Link
+                  </Button>
+                  <FormControl fullWidth size="small" sx={{ mt: 2 }}>
+                    <InputLabel sx={{ color: alpha('#FFFFFF', 0.7) }}>Columns</InputLabel>
+                    <Select
+                      value={selectedComponent.content?.columns || 4}
+                      onChange={(e) =>
+                        handleUpdateComponentContent(
+                          selectedComponent.id,
+                          'columns',
+                          parseInt(e.target.value)
+                        )
+                      }
+                      label="Columns"
+                      sx={{
+                        color: 'white',
+                        '& .MuiOutlinedInput-notchedOutline': {
+                          borderColor: alpha('#FFFFFF', 0.2),
+                        },
+                      }}
+                    >
+                      <MenuItem value={1}>1 Column</MenuItem>
+                      <MenuItem value={2}>2 Columns</MenuItem>
+                      <MenuItem value={3}>3 Columns</MenuItem>
+                      <MenuItem value={4}>4 Columns</MenuItem>
+                    </Select>
+                  </FormControl>
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={selectedComponent.content?.showNewsletter !== false}
+                        onChange={(e) =>
+                          handleUpdateComponentContent(
+                            selectedComponent.id,
+                            'showNewsletter',
+                            e.target.checked
+                          )
+                        }
+                        sx={{ '& .MuiSwitch-switchBase.Mui-checked': { color: G_START } }}
+                      />
+                    }
+                    label="Show Newsletter"
+                    sx={{ color: 'white', mt: 2 }}
+                  />
+                  <TextField
+                    fullWidth
+                    label="Copyright Text"
+                    value={selectedComponent.content?.copyright || ''}
+                    onChange={(e) =>
+                      handleUpdateComponentContent(
+                        selectedComponent.id,
+                        'copyright',
+                        e.target.value
+                      )
+                    }
+                    sx={{
+                      mt: 2,
+                      input: { color: 'white' },
+                      label: { color: alpha('#FFFFFF', 0.7) },
+                    }}
+                  />
+                </>
+              )}
               {selectedComponent.type === 'hero' && (
                 <>
                   <TextField
@@ -5627,7 +6550,7 @@ const DesignStudio = ({
                   <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
                     <Button
                       variant="outlined"
-                      startIcon={<ImageOutlined />}
+                      startIcon={<ImageIcon />}
                       onClick={() => setImageUploadDialogOpen(true)}
                       sx={{ color: 'white', borderColor: alpha('#FFFFFF', 0.2) }}
                     >
@@ -5649,7 +6572,6 @@ const DesignStudio = ({
                   </Box>
                 </>
               )}
-
               {selectedComponent.type === 'features' && (
                 <>
                   <TextField
@@ -5742,7 +6664,6 @@ const DesignStudio = ({
                   </Button>
                 </>
               )}
-
               {selectedComponent.type === 'gallery' && (
                 <>
                   <TextField
@@ -5805,7 +6726,7 @@ const DesignStudio = ({
                         <Button
                           size="small"
                           variant="outlined"
-                          startIcon={<ImageOutlined />}
+                          startIcon={<ImageIcon />}
                           onClick={() => setImageUploadDialogOpen(true)}
                           sx={{ color: 'white', borderColor: alpha('#FFFFFF', 0.2) }}
                         >
@@ -5835,7 +6756,6 @@ const DesignStudio = ({
                   </Button>
                 </>
               )}
-
               {selectedComponent.type === 'contact' && (
                 <>
                   <TextField
@@ -5892,7 +6812,6 @@ const DesignStudio = ({
                   />
                 </>
               )}
-
               {selectedComponent.type === 'pricing' && (
                 <>
                   <TextField
@@ -5987,7 +6906,6 @@ const DesignStudio = ({
                   </Button>
                 </>
               )}
-
               <Button
                 fullWidth
                 variant="outlined"
@@ -6023,7 +6941,6 @@ const DesignStudio = ({
                 </IconButton>
               </Box>
               <Divider sx={{ mb: 2, borderColor: alpha('#FFFFFF', 0.1) }} />
-
               <TextField
                 fullWidth
                 label="Text Content"
@@ -6035,7 +6952,6 @@ const DesignStudio = ({
                 }
                 sx={{ mb: 2, input: { color: 'white' }, label: { color: alpha('#FFFFFF', 0.7) } }}
               />
-
               <FormControl fullWidth size="small" sx={{ mb: 2 }}>
                 <InputLabel sx={{ color: alpha('#FFFFFF', 0.7) }}>Tag Type</InputLabel>
                 <Select
@@ -6059,9 +6975,9 @@ const DesignStudio = ({
                   <MenuItem value="span">Span</MenuItem>
                   <MenuItem value="div">Div</MenuItem>
                   <MenuItem value="a">Link</MenuItem>
+                  <MenuItem value="nav">Navigation</MenuItem>
                 </Select>
               </FormControl>
-
               {selectedTextElement.tag === 'a' && (
                 <TextField
                   fullWidth
@@ -6073,11 +6989,14 @@ const DesignStudio = ({
                   sx={{ mb: 2, input: { color: 'white' }, label: { color: alpha('#FFFFFF', 0.7) } }}
                 />
               )}
-
+              {selectedTextElement.isNav && (
+                <Typography variant="body2" sx={{ color: alpha('#FFFFFF', 0.5), mb: 2 }}>
+                  Navigation items separated by | (pipe) character.
+                </Typography>
+              )}
               <Typography variant="subtitle2" sx={{ color: alpha('#FFFFFF', 0.7), mb: 1 }}>
                 Text Styling
               </Typography>
-
               <Box sx={{ display: 'flex', gap: 1, mb: 2, flexWrap: 'wrap' }}>
                 <Tooltip title="Bold">
                   <IconButton
@@ -6172,7 +7091,6 @@ const DesignStudio = ({
                   </IconButton>
                 </Tooltip>
               </Box>
-
               <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
                 <Box sx={{ flex: 1 }}>
                   <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.7) }}>
@@ -6190,7 +7108,7 @@ const DesignStudio = ({
                         );
                       }}
                     >
-                      <TextDecrease />
+                      <Delete fontSize="small" />
                     </IconButton>
                     <Typography>{selectedTextElement.styles?.fontSize || '16px'}</Typography>
                     <IconButton
@@ -6204,7 +7122,7 @@ const DesignStudio = ({
                         );
                       }}
                     >
-                      <TextIncrease />
+                      <Add fontSize="small" />
                     </IconButton>
                   </Box>
                 </Box>
@@ -6225,7 +7143,6 @@ const DesignStudio = ({
                   />
                 </Box>
               </Box>
-
               <Button
                 fullWidth
                 variant="outlined"
@@ -6244,7 +7161,6 @@ const DesignStudio = ({
                   }}
                 />
               </Button>
-
               <Button
                 fullWidth
                 variant="outlined"
@@ -6263,7 +7179,6 @@ const DesignStudio = ({
                   }}
                 />
               </Button>
-
               <FormControlLabel
                 control={
                   <Switch
@@ -6281,7 +7196,6 @@ const DesignStudio = ({
                 label="Uppercase"
                 sx={{ color: 'white', mb: 2 }}
               />
-
               <Button
                 fullWidth
                 variant="outlined"
@@ -6317,18 +7231,32 @@ const DesignStudio = ({
                 </IconButton>
               </Box>
               <Divider sx={{ mb: 2, borderColor: alpha('#FFFFFF', 0.1) }} />
-
               <Box
                 component="img"
                 src={selectedImageElement.imageUrl}
                 alt={selectedImageElement.alt}
-                sx={{
-                  width: '100%',
-                  borderRadius: globalStyles.borderRadius,
-                  mb: 2,
+                sx={{ width: '100%', borderRadius: globalStyles.borderRadius, mb: 2 }}
+              />
+              <input
+                type="file"
+                ref={replaceImageInputRef}
+                accept="image/*"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) handleReplaceImage(selectedImageElement.id, file);
+                  e.target.value = '';
                 }}
               />
-
+              <Button
+                fullWidth
+                variant="outlined"
+                startIcon={<Upload />}
+                onClick={() => replaceImageInputRef.current?.click()}
+                sx={{ mb: 2, color: 'white', borderColor: alpha(G_START, 0.5) }}
+              >
+                Replace Image
+              </Button>
               <TextField
                 fullWidth
                 label="Alt Text"
@@ -6338,7 +7266,6 @@ const DesignStudio = ({
                 }
                 sx={{ mb: 2, input: { color: 'white' }, label: { color: alpha('#FFFFFF', 0.7) } }}
               />
-
               <Typography variant="subtitle2" sx={{ color: alpha('#FFFFFF', 0.7), mb: 1 }}>
                 Image Size
               </Typography>
@@ -6374,7 +7301,6 @@ const DesignStudio = ({
                   sx={{ flex: 1, input: { color: 'white' } }}
                 />
               </Box>
-
               <Typography variant="subtitle2" sx={{ color: alpha('#FFFFFF', 0.7), mb: 1 }}>
                 Image Style Presets
               </Typography>
@@ -6393,7 +7319,6 @@ const DesignStudio = ({
                   </Grid>
                 ))}
               </Grid>
-
               <Typography variant="subtitle2" sx={{ color: alpha('#FFFFFF', 0.7), mb: 1 }}>
                 Transform
               </Typography>
@@ -6431,91 +7356,35 @@ const DesignStudio = ({
                   </IconButton>
                 </Tooltip>
               </Box>
-
               <Typography variant="subtitle2" sx={{ color: alpha('#FFFFFF', 0.7), mb: 1 }}>
                 Filters
               </Typography>
-
-              <Box sx={{ mb: 2 }}>
-                <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.5) }}>
-                  Brightness
-                </Typography>
-                <Slider
-                  value={selectedImageElement.filters?.brightness || 100}
-                  onChange={(e, val) =>
-                    handleApplyImageFilter(selectedImageElement.id, 'brightness', val)
-                  }
-                  min={0}
-                  max={200}
-                  size="small"
-                  sx={{ color: G_START }}
-                />
-              </Box>
-
-              <Box sx={{ mb: 2 }}>
-                <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.5) }}>
-                  Contrast
-                </Typography>
-                <Slider
-                  value={selectedImageElement.filters?.contrast || 100}
-                  onChange={(e, val) =>
-                    handleApplyImageFilter(selectedImageElement.id, 'contrast', val)
-                  }
-                  min={0}
-                  max={200}
-                  size="small"
-                  sx={{ color: G_START }}
-                />
-              </Box>
-
-              <Box sx={{ mb: 2 }}>
-                <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.5) }}>
-                  Saturation
-                </Typography>
-                <Slider
-                  value={selectedImageElement.filters?.saturate || 100}
-                  onChange={(e, val) =>
-                    handleApplyImageFilter(selectedImageElement.id, 'saturate', val)
-                  }
-                  min={0}
-                  max={200}
-                  size="small"
-                  sx={{ color: G_START }}
-                />
-              </Box>
-
-              <Box sx={{ mb: 2 }}>
-                <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.5) }}>
-                  Blur
-                </Typography>
-                <Slider
-                  value={selectedImageElement.filters?.blur || 0}
-                  onChange={(e, val) =>
-                    handleApplyImageFilter(selectedImageElement.id, 'blur', val)
-                  }
-                  min={0}
-                  max={20}
-                  size="small"
-                  sx={{ color: G_START }}
-                />
-              </Box>
-
-              <Box sx={{ mb: 2 }}>
-                <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.5) }}>
-                  Grayscale
-                </Typography>
-                <Slider
-                  value={selectedImageElement.filters?.grayscale || 0}
-                  onChange={(e, val) =>
-                    handleApplyImageFilter(selectedImageElement.id, 'grayscale', val)
-                  }
-                  min={0}
-                  max={100}
-                  size="small"
-                  sx={{ color: G_START }}
-                />
-              </Box>
-
+              {['brightness', 'contrast', 'saturate', 'blur', 'grayscale'].map((filter) => (
+                <Box key={filter} sx={{ mb: 2 }}>
+                  <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.5) }}>
+                    {filter.charAt(0).toUpperCase() + filter.slice(1)}
+                  </Typography>
+                  <Slider
+                    value={
+                      selectedImageElement.filters?.[filter] ||
+                      (filter === 'brightness'
+                        ? 100
+                        : filter === 'contrast'
+                          ? 100
+                          : filter === 'saturate'
+                            ? 100
+                            : 0)
+                    }
+                    onChange={(e, val) =>
+                      handleApplyImageFilter(selectedImageElement.id, filter, val)
+                    }
+                    min={filter === 'blur' ? 0 : 0}
+                    max={filter === 'blur' ? 20 : filter === 'grayscale' ? 100 : 200}
+                    size="small"
+                    sx={{ color: G_START }}
+                  />
+                </Box>
+              ))}
               <Button
                 fullWidth
                 variant="outlined"
@@ -6531,7 +7400,7 @@ const DesignStudio = ({
         </Box>
       </Drawer>
 
-      {/* Image Upload Dialog for Components */}
+      {/* Dialogs */}
       <Dialog
         open={imageUploadDialogOpen}
         onClose={() => setImageUploadDialogOpen(false)}
@@ -6574,9 +7443,7 @@ const DesignStudio = ({
                   key={image.id}
                   sx={{ cursor: 'pointer' }}
                   onClick={() => {
-                    if (selectedComponent) {
-                      handleAddImageToComponent(image, selectedComponent.id);
-                    }
+                    if (selectedComponent) handleAddImageToComponent(image, selectedComponent.id);
                     setImageUploadDialogOpen(false);
                   }}
                 >
@@ -6606,7 +7473,6 @@ const DesignStudio = ({
         </DialogActions>
       </Dialog>
 
-      {/* Color Picker Popover */}
       <Popover
         open={Boolean(colorPickerAnchor)}
         anchorEl={colorPickerAnchor}
@@ -6618,26 +7484,19 @@ const DesignStudio = ({
         <Box sx={{ p: 2, bgcolor: '#1A1F2E' }}>
           <ChromePicker
             color={
-              selectedColorTarget?.property === 'primaryColor'
-                ? globalStyles.primaryColor
-                : selectedColorTarget?.property === 'secondaryColor'
-                  ? globalStyles.secondaryColor
-                  : selectedColorTarget?.property === 'accentColor'
-                    ? globalStyles.accentColor
-                    : selectedColorTarget?.property === 'backgroundColor'
-                      ? globalStyles.backgroundColor
-                      : selectedColorTarget?.property === 'textColor'
-                        ? globalStyles.textColor
-                        : selectedColorTarget?.property === 'headingColor'
-                          ? globalStyles.headingColor
-                          : selectedTextElement?.styles?.color || '#FFFFFF'
+              selectedColorTarget?.target === 'global'
+                ? globalStyles[selectedColorTarget.property] || '#FFFFFF'
+                : selectedColorTarget?.target === 'text'
+                  ? selectedTextElement?.styles?.[selectedColorTarget.property] || '#FFFFFF'
+                  : selectedColorTarget?.target === 'component'
+                    ? selectedComponent?.styles?.[selectedColorTarget.property] || '#FFFFFF'
+                    : '#FFFFFF'
             }
             onChange={handleColorChange}
           />
         </Box>
       </Popover>
 
-      {/* ── Save Project Modal ──────────────────────────────────── */}
       <Dialog
         open={saveModalOpen}
         onClose={() => setSaveModalOpen(false)}
@@ -6654,9 +7513,7 @@ const DesignStudio = ({
           },
         }}
       >
-        {/* Modal header gradient strip */}
         <Box sx={{ height: 4, background: GRAD }} />
-
         <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1.5, pt: 3 }}>
           <Box
             sx={{
@@ -6680,7 +7537,6 @@ const DesignStudio = ({
             </Typography>
           </Box>
         </DialogTitle>
-
         <DialogContent sx={{ pb: 1 }}>
           <TextField
             autoFocus
@@ -6703,103 +7559,7 @@ const DesignStudio = ({
               },
             }}
           />
-
-          {/* Saved project card — appears after a successful save */}
-          {savedProjectCard && (
-            <Box
-              sx={{
-                mt: 3,
-                borderRadius: '14px',
-                border: `1px solid ${alpha(G_START, 0.2)}`,
-                overflow: 'hidden',
-                bgcolor: alpha(G_START, 0.05),
-              }}
-            >
-              {/* Thumbnail */}
-              {savedProjectCard.thumbnail ? (
-                <Box
-                  component="img"
-                  src={savedProjectCard.thumbnail}
-                  alt="Website preview"
-                  sx={{ width: '100%', display: 'block', maxHeight: 200, objectFit: 'cover' }}
-                />
-              ) : (
-                <Box
-                  sx={{
-                    height: 140,
-                    background: GRAD,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <Typography sx={{ color: 'white', opacity: 0.6, fontSize: 40 }}>🌐</Typography>
-                </Box>
-              )}
-
-              {/* Card body */}
-              <Box sx={{ p: 2 }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-                  <Box
-                    sx={{
-                      width: 8,
-                      height: 8,
-                      borderRadius: '50%',
-                      bgcolor: G_END,
-                      boxShadow: `0 0 6px ${G_END}`,
-                    }}
-                  />
-                  <Typography variant="subtitle2" sx={{ color: 'white', fontWeight: 700 }}>
-                    {savedProjectCard.name}
-                  </Typography>
-                  <Chip
-                    label="Saved"
-                    size="small"
-                    sx={{
-                      height: 18,
-                      fontSize: '0.65rem',
-                      bgcolor: alpha(G_END, 0.15),
-                      color: G_END,
-                      border: `1px solid ${alpha(G_END, 0.3)}`,
-                    }}
-                  />
-                </Box>
-
-                <Typography
-                  variant="caption"
-                  sx={{ color: alpha('#FFFFFF', 0.4), display: 'block', mb: 1 }}
-                >
-                  Publish link (available after publishing):
-                </Typography>
-                <Box
-                  sx={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 1,
-                    p: '8px 12px',
-                    bgcolor: alpha(G_START, 0.1),
-                    borderRadius: '8px',
-                    border: `1px solid ${alpha(G_START, 0.2)}`,
-                  }}
-                >
-                  <LinkIcon sx={{ fontSize: 14, color: G_START, flexShrink: 0 }} />
-                  <Typography
-                    variant="caption"
-                    sx={{
-                      color: G_START,
-                      wordBreak: 'break-all',
-                      fontFamily: 'monospace',
-                      fontSize: '0.72rem',
-                    }}
-                  >
-                    {`${window.location.origin}/preview?id=${savedProjectCard.id}&published=true`}
-                  </Typography>
-                </Box>
-              </Box>
-            </Box>
-          )}
         </DialogContent>
-
         <DialogActions sx={{ px: 3, pb: 3, pt: 1, gap: 1 }}>
           <Button
             onClick={() => setSaveModalOpen(false)}
@@ -6826,10 +7586,8 @@ const DesignStudio = ({
         </DialogActions>
       </Dialog>
 
-      {/* Publish Modal - New Database Publishing Modal */}
       {renderPublishModal()}
 
-      {/* Publish Success Dialog */}
       <Dialog
         open={publishDialogOpen}
         onClose={() => setPublishDialogOpen(false)}
@@ -6844,13 +7602,12 @@ const DesignStudio = ({
         }}
       >
         <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <CheckCircleRounded sx={{ color: G_END }} />
+          <Check sx={{ color: G_END }} />
           Website Published Successfully!
         </DialogTitle>
         <DialogContent>
           <Typography variant="body2" sx={{ mb: 2, color: 'rgba(255,255,255,0.7)' }}>
-            Your website has been saved to the database and is now live. Share this link with
-            others:
+            Your website has been saved to the database and is now live.
           </Typography>
           <Paper
             sx={{ p: 2, bgcolor: alpha(G_START, 0.1), borderRadius: '8px', wordBreak: 'break-all' }}
@@ -6883,360 +7640,6 @@ const DesignStudio = ({
         </DialogActions>
       </Dialog>
 
-      {/* ── My Projects Gallery Dialog ────────────────────────────────── */}
-      <Dialog
-        open={showProjectsGallery}
-        onClose={() => setShowProjectsGallery(false)}
-        maxWidth="lg"
-        fullWidth
-        PaperProps={{
-          sx: {
-            bgcolor: '#0A0F1A',
-            backgroundImage: 'none',
-            borderRadius: '20px',
-            border: `1px solid ${alpha(G_START, 0.2)}`,
-            color: 'white',
-            overflow: 'hidden',
-            maxHeight: '90vh',
-          },
-        }}
-      >
-        <Box sx={{ height: 4, background: GRAD }} />
-        <DialogTitle
-          sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', pt: 3 }}
-        >
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-            <Box
-              sx={{
-                width: 36,
-                height: 36,
-                borderRadius: '10px',
-                background: GRAD,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <PhotoLibrary sx={{ fontSize: 18, color: 'white' }} />
-            </Box>
-            <Box>
-              <Typography variant="h6" sx={{ color: 'white', fontWeight: 700, lineHeight: 1.2 }}>
-                My Projects
-              </Typography>
-              <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.45) }}>
-                {allProjects.length} saved project{allProjects.length !== 1 ? 's' : ''}
-              </Typography>
-            </Box>
-          </Box>
-          <IconButton
-            onClick={() => setShowProjectsGallery(false)}
-            sx={{ color: alpha('#FFFFFF', 0.6) }}
-          >
-            <Close />
-          </IconButton>
-        </DialogTitle>
-
-        <DialogContent sx={{ pb: 3 }}>
-          {allProjects.length === 0 ? (
-            <Box sx={{ textAlign: 'center', py: 8 }}>
-              <Typography sx={{ fontSize: 56, mb: 2 }}>🗂️</Typography>
-              <Typography variant="h6" sx={{ color: 'white', mb: 1 }}>
-                No saved projects yet
-              </Typography>
-              <Typography variant="body2" sx={{ color: alpha('#FFFFFF', 0.5) }}>
-                Click Save in the editor and name your project to see it here
-              </Typography>
-            </Box>
-          ) : (
-            <Grid container spacing={3} sx={{ mt: 0.5 }}>
-              {allProjects.map((project) => {
-                const thumbnail = generateThumbnailDataUrl(project.styles || {});
-                const pageCount = project.pages?.length || 1;
-                const lastEdited = project.lastEdited
-                  ? new Date(project.lastEdited).toLocaleDateString('en-GB', {
-                      day: 'numeric',
-                      month: 'short',
-                      year: 'numeric',
-                    })
-                  : '—';
-                return (
-                  <Grid item xs={12} sm={6} md={4} key={project.id}>
-                    <Card
-                      sx={{
-                        bgcolor: alpha('#FFFFFF', 0.04),
-                        border: `1px solid ${alpha('#FFFFFF', 0.1)}`,
-                        borderRadius: '16px',
-                        overflow: 'hidden',
-                        transition: 'all 0.3s',
-                        '&:hover': {
-                          transform: 'translateY(-4px)',
-                          borderColor: alpha(G_START, 0.4),
-                          boxShadow: `0 12px 32px ${alpha(G_START, 0.15)}`,
-                        },
-                      }}
-                    >
-                      {/* Thumbnail */}
-                      {thumbnail ? (
-                        <Box
-                          component="img"
-                          src={thumbnail}
-                          alt={project.name}
-                          sx={{ width: '100%', height: 140, objectFit: 'cover', display: 'block' }}
-                        />
-                      ) : (
-                        <Box
-                          sx={{
-                            height: 140,
-                            background: GRAD,
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                          }}
-                        >
-                          <Typography sx={{ fontSize: 40 }}>🌐</Typography>
-                        </Box>
-                      )}
-
-                      <CardContent sx={{ pb: 1 }}>
-                        <Typography
-                          variant="subtitle1"
-                          sx={{ color: 'white', fontWeight: 700, mb: 0.5 }}
-                          noWrap
-                        >
-                          {project.name}
-                        </Typography>
-                        <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 1 }}>
-                          <Chip
-                            label={project.status === 'published' ? 'Published' : 'Draft'}
-                            size="small"
-                            sx={{
-                              height: 18,
-                              fontSize: '0.62rem',
-                              bgcolor:
-                                project.status === 'published'
-                                  ? alpha(G_END, 0.15)
-                                  : alpha('#FFFFFF', 0.08),
-                              color: project.status === 'published' ? G_END : alpha('#FFFFFF', 0.5),
-                            }}
-                          />
-                          <Chip
-                            label={`${pageCount} page${pageCount !== 1 ? 's' : ''}`}
-                            size="small"
-                            sx={{
-                              height: 18,
-                              fontSize: '0.62rem',
-                              bgcolor: alpha(G_START, 0.1),
-                              color: G_START,
-                            }}
-                          />
-                        </Box>
-                        <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.35) }}>
-                          Last edited {lastEdited}
-                        </Typography>
-                      </CardContent>
-
-                      <CardActions sx={{ px: 2, pb: 2, pt: 0, gap: 1 }}>
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          startIcon={<Preview />}
-                          onClick={() => setGalleryPreviewProject(project)}
-                          sx={{
-                            color: 'white',
-                            borderColor: alpha('#FFFFFF', 0.2),
-                            flex: 1,
-                            fontSize: '0.75rem',
-                          }}
-                        >
-                          Preview
-                        </Button>
-                        <Button
-                          size="small"
-                          variant="contained"
-                          startIcon={<Brush />}
-                          onClick={() => handleOpenProjectInEditor(project)}
-                          sx={{ background: GRAD, flex: 1, fontSize: '0.75rem' }}
-                        >
-                          Open
-                        </Button>
-                        <Tooltip title="Delete project">
-                          <IconButton
-                            size="small"
-                            onClick={() => handleDeleteProject(project.id)}
-                            sx={{
-                              color: '#ff4444',
-                              border: `1px solid ${alpha('#ff4444', 0.3)}`,
-                              borderRadius: '8px',
-                              p: '5px',
-                            }}
-                          >
-                            <Delete fontSize="small" />
-                          </IconButton>
-                        </Tooltip>
-                      </CardActions>
-                    </Card>
-                  </Grid>
-                );
-              })}
-            </Grid>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      {/* ── Gallery Preview Dialog ────────────────────────────────────── */}
-      <Dialog
-        open={Boolean(galleryPreviewProject)}
-        onClose={() => setGalleryPreviewProject(null)}
-        maxWidth="md"
-        fullWidth
-        PaperProps={{
-          sx: {
-            bgcolor: '#0A0F1A',
-            backgroundImage: 'none',
-            borderRadius: '20px',
-            border: `1px solid ${alpha(G_START, 0.2)}`,
-            color: 'white',
-            overflow: 'hidden',
-          },
-        }}
-      >
-        {galleryPreviewProject && (
-          <>
-            <Box sx={{ height: 4, background: GRAD }} />
-            <DialogTitle
-              sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
-            >
-              <Typography variant="h6" sx={{ color: 'white', fontWeight: 700 }}>
-                Preview — {galleryPreviewProject.name}
-              </Typography>
-              <IconButton
-                onClick={() => setGalleryPreviewProject(null)}
-                sx={{ color: alpha('#FFFFFF', 0.6) }}
-              >
-                <Close />
-              </IconButton>
-            </DialogTitle>
-            <DialogContent>
-              {/* Colour preview strip */}
-              {galleryPreviewProject.styles && (
-                <Box sx={{ display: 'flex', gap: 1, mb: 2, flexWrap: 'wrap' }}>
-                  {['primaryColor', 'secondaryColor', 'accentColor', 'backgroundColor'].map(
-                    (key) =>
-                      galleryPreviewProject.styles[key] && (
-                        <Tooltip
-                          key={key}
-                          title={`${key.replace('Color', '')}: ${galleryPreviewProject.styles[key]}`}
-                        >
-                          <Box
-                            sx={{
-                              width: 32,
-                              height: 32,
-                              bgcolor: galleryPreviewProject.styles[key],
-                              borderRadius: '8px',
-                              border: `1px solid ${alpha('#FFFFFF', 0.2)}`,
-                            }}
-                          />
-                        </Tooltip>
-                      )
-                  )}
-                  <Typography
-                    variant="caption"
-                    sx={{ color: alpha('#FFFFFF', 0.4), alignSelf: 'center', ml: 1 }}
-                  >
-                    {galleryPreviewProject.styles.fontFamily?.split(',')[0] || 'Default font'}
-                  </Typography>
-                </Box>
-              )}
-
-              {/* Thumbnail */}
-              {(() => {
-                const thumb = generateThumbnailDataUrl(galleryPreviewProject.styles || {});
-                return thumb ? (
-                  <Box
-                    component="img"
-                    src={thumb}
-                    alt="preview"
-                    sx={{
-                      width: '100%',
-                      borderRadius: '12px',
-                      display: 'block',
-                      mb: 2,
-                      border: `1px solid ${alpha('#FFFFFF', 0.1)}`,
-                    }}
-                  />
-                ) : (
-                  <Box
-                    sx={{
-                      height: 200,
-                      borderRadius: '12px',
-                      background: GRAD,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      mb: 2,
-                    }}
-                  >
-                    <Typography sx={{ fontSize: 48 }}>🌐</Typography>
-                  </Box>
-                );
-              })()}
-
-              {/* Stats */}
-              <Grid container spacing={2}>
-                {[
-                  { label: 'Components', value: galleryPreviewProject.components?.length || 0 },
-                  {
-                    label: 'Text Elements',
-                    value: galleryPreviewProject.textElements?.length || 0,
-                  },
-                  { label: 'Images', value: galleryPreviewProject.uploadedImages?.length || 0 },
-                  { label: 'Pages', value: galleryPreviewProject.pages?.length || 1 },
-                ].map(({ label, value }) => (
-                  <Grid item xs={6} sm={3} key={label}>
-                    <Box
-                      sx={{
-                        textAlign: 'center',
-                        p: 2,
-                        bgcolor: alpha('#FFFFFF', 0.04),
-                        borderRadius: '12px',
-                        border: `1px solid ${alpha('#FFFFFF', 0.08)}`,
-                      }}
-                    >
-                      <Typography variant="h5" sx={{ color: G_START, fontWeight: 700 }}>
-                        {value}
-                      </Typography>
-                      <Typography variant="caption" sx={{ color: alpha('#FFFFFF', 0.5) }}>
-                        {label}
-                      </Typography>
-                    </Box>
-                  </Grid>
-                ))}
-              </Grid>
-            </DialogContent>
-            <DialogActions sx={{ px: 3, pb: 3, gap: 1 }}>
-              <Button
-                onClick={() => setGalleryPreviewProject(null)}
-                sx={{ color: alpha('#FFFFFF', 0.6) }}
-              >
-                Close
-              </Button>
-              <Button
-                variant="contained"
-                startIcon={<Brush />}
-                onClick={() => {
-                  handleOpenProjectInEditor(galleryPreviewProject);
-                  setGalleryPreviewProject(null);
-                }}
-                sx={{ background: GRAD, borderRadius: '10px', fontWeight: 700, px: 3 }}
-              >
-                Open in Editor
-              </Button>
-            </DialogActions>
-          </>
-        )}
-      </Dialog>
-
-      {/* ── Add Page Dialog ───────────────────────────────────────────── */}
       <Dialog
         open={addPageDialogOpen}
         onClose={() => setAddPageDialogOpen(false)}
@@ -7286,6 +7689,96 @@ const DesignStudio = ({
             Add Page
           </Button>
         </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={showProjectsGallery}
+        onClose={() => setShowProjectsGallery(false)}
+        maxWidth="lg"
+        fullWidth
+        PaperProps={{
+          sx: {
+            bgcolor: '#0A0F1A',
+            backgroundImage: 'none',
+            borderRadius: '20px',
+            border: `1px solid ${alpha(G_START, 0.2)}`,
+            color: 'white',
+            overflow: 'hidden',
+            maxHeight: '92vh',
+          },
+        }}
+      >
+        <Box sx={{ height: 4, background: GRAD }} />
+        <DialogTitle
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            pt: 2,
+            pb: 1,
+          }}
+        >
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+            <Box
+              sx={{
+                width: 36,
+                height: 36,
+                borderRadius: '10px',
+                background: GRAD,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <FolderOpen sx={{ fontSize: 18, color: 'white' }} />
+            </Box>
+            <Typography variant="h6" sx={{ color: 'white', fontWeight: 700 }}>
+              My Projects
+            </Typography>
+          </Box>
+          <IconButton
+            onClick={() => setShowProjectsGallery(false)}
+            sx={{ color: alpha('#FFFFFF', 0.6) }}
+          >
+            <Close />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent sx={{ p: 0, overflowY: 'auto' }}>
+          <ProjectsGallery
+            showHeader={false}
+            onOpenProject={(project) => {
+              loadProjectFromSavedPages(project);
+              setShowProjectsGallery(false);
+            }}
+            onPreviewProject={(project) => {
+              const projectId = project.id;
+              const projectData = { ...project, id: projectId };
+              saveProjectToLocalStorage(projectData);
+              navigate(`/preview?id=${projectId}&t=${Date.now()}`);
+            }}
+            onPublishProject={(project) => {
+              loadProjectFromSavedPages(project);
+              setShowProjectsGallery(false);
+              setTimeout(() => setPublishModalOpen(true), 300);
+            }}
+            onDeleteProject={(projectId) => {
+              handleDeleteProject(projectId);
+            }}
+            onDuplicateProject={(project) => {
+              const dupeId = Date.now().toString();
+              const dupeData = {
+                ...project,
+                id: dupeId,
+                name: `${project.name} (Copy)`,
+                status: 'draft',
+                lastEdited: new Date().toISOString(),
+              };
+              saveProjectToLocalStorage(dupeData);
+              showSnackbar(`"${dupeData.name}" duplicated`, 'success');
+              if (token) loadProjectsFromDatabase();
+            }}
+          />
+        </DialogContent>
       </Dialog>
 
       <Snackbar

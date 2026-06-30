@@ -57,7 +57,6 @@ const LoginPage = () => {
     return true;
   };
 
-  // LoginPage.js - Updated handleSubmit
   const handleSubmit = async (e) => {
     e.preventDefault();
 
@@ -71,7 +70,10 @@ const LoginPage = () => {
     try {
       const res = await fetch(`${API_BASE}/api/auth/login`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
         body: JSON.stringify({
           email: formData.email.trim(),
           password: formData.password,
@@ -92,7 +94,8 @@ const LoginPage = () => {
         return;
       }
 
-      if (data.status === 'success' && data.access_token) {
+      // Check for successful login response
+      if (data.status === 'success' && data.access_token && data.user) {
         // Save remember me preference
         if (rememberMe) {
           localStorage.setItem('rememberedEmail', formData.email);
@@ -100,16 +103,28 @@ const LoginPage = () => {
           localStorage.removeItem('rememberedEmail');
         }
 
-        // Authenticate user - this will update both token and user state
-        login(data.access_token, data.user);
+        // Store token and user data
+        const userData = {
+          id: data.user.id,
+          name: data.user.name,
+          email: data.user.email,
+          credits: data.user.credits,
+          created_at: data.user.created_at,
+          subscription_tier: data.user.subscription_tier,
+        };
 
-        // Navigate directly - no timeout needed since state is updated synchronously
-        navigate(data.redirect || '/dashboard');
+        // Authenticate user - this updates both token and user state
+        login(data.access_token, userData);
+
+        // Navigate to dashboard or redirect URL
+        const redirectPath = data.redirect || '/dashboard';
+        navigate(redirectPath);
       } else {
-        setError('Invalid server response');
+        setError('Invalid server response. Please try again.');
         setLoading(false);
       }
     } catch (err) {
+      console.error('Login error:', err);
       setError('Network error. Please check your connection and try again.');
       setLoading(false);
     }
@@ -331,6 +346,6 @@ const LoginPage = () => {
       </Container>
     </Box>
   );
-};;
+};
 
 export default LoginPage;

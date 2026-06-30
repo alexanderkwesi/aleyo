@@ -1,5 +1,5 @@
-// Integrations.js
-import React, { useState } from 'react';
+// Integrations.js - Complete Fixed Version
+import React, { useState, useEffect } from 'react';
 import {
   Box,
   Container,
@@ -19,7 +19,12 @@ import {
   Snackbar,
   alpha,
   useTheme,
-  Divider,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  IconButton,
+  MenuItem,
 } from '@mui/material';
 import {
   Search,
@@ -39,136 +44,19 @@ import {
   Language,
   MusicNote,
   Chat,
+  Close,
 } from '@mui/icons-material';
 import { motion } from 'framer-motion';
+import axios from 'axios';
+import { useAuth } from '../context/AuthContext';
 
 const G_START = '#4F6EF7';
 const G_MID = '#2DBCB6';
 const G_END = '#3ED67C';
 const GRAD = `linear-gradient(135deg, ${G_START} 0%, ${G_MID} 50%, ${G_END} 100%)`;
 
-const integrationsList = [
-  {
-    id: 1,
-    name: 'Stripe',
-    category: 'payments',
-    description: 'Accept payments and manage subscriptions',
-    icon: <Payment />,
-    color: '#635bff',
-    connected: false,
-    popular: true,
-  },
-  {
-    id: 2,
-    name: 'Mailchimp',
-    category: 'marketing',
-    description: 'Email marketing and newsletters',
-    icon: <Mail />,
-    color: '#ffc107',
-    connected: false,
-    popular: true,
-  },
-  {
-    id: 3,
-    name: 'WhatsApp Business',
-    category: 'social',
-    description: 'Customer support and messaging',
-    icon: <WhatsApp />,
-    color: '#25D366',
-    connected: false,
-    popular: true,
-  },
-  {
-    id: 4,
-    name: 'Instagram',
-    category: 'social',
-    description: 'Social media integration and feeds',
-    icon: <Instagram />,
-    color: '#E4405F',
-    connected: true,
-    popular: true,
-  },
-  {
-    id: 5,
-    name: 'Facebook Pixel',
-    category: 'analytics',
-    description: 'Track conversions and retargeting',
-    icon: <Facebook />,
-    color: '#1877F2',
-    connected: false,
-    popular: true,
-  },
-  {
-    id: 6,
-    name: 'Google Analytics',
-    category: 'analytics',
-    description: 'Website traffic and user behavior',
-    icon: <Analytics />,
-    color: '#34A853',
-    connected: true,
-    popular: true,
-  },
-  {
-    id: 7,
-    name: 'AWS S3',
-    category: 'storage',
-    description: 'Cloud storage for media files',
-    icon: <Storage />,
-    color: '#FF9900',
-    connected: false,
-    popular: false,
-  },
-  {
-    id: 8,
-    name: 'Cloudflare',
-    category: 'security',
-    description: 'CDN and security protection',
-    icon: <Security />,
-    color: '#F38020',
-    connected: false,
-    popular: false,
-  },
-  {
-    id: 9,
-    name: 'OpenAI API',
-    category: 'ai',
-    description: 'AI-powered content generation',
-    icon: <Api />,
-    color: '#10a37f',
-    connected: false,
-    popular: true,
-  },
-  {
-    id: 10,
-    name: 'Spotify',
-    category: 'music',
-    description: 'Music embed and playlists',
-    icon: <MusicNote />,
-    color: '#1DB954',
-    connected: false,
-    popular: false,
-  },
-  {
-    id: 11,
-    name: 'Discord',
-    category: 'social',
-    description: 'Community integration and webhooks',
-    icon: <Chat />,
-    color: '#5865F2',
-    connected: false,
-    popular: true,
-  },
-  {
-    id: 12,
-    name: 'Google Drive',
-    category: 'storage',
-    description: 'Cloud storage integration',
-    icon: <CloudUpload />,
-    color: '#4285F4',
-    connected: false,
-    popular: false,
-  },
-];
+// Base URL for API - use the same port as your backend
+const API_BASE = process.env.REACT_APP_API_URL || 'http://127.0.0.1:8000';
 
 const categories = [
   { value: 'all', label: 'All' },
@@ -183,31 +71,167 @@ const categories = [
 
 const Integrations = () => {
   const theme = useTheme();
+  const { user, token } = useAuth();
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
-  const [integrations, setIntegrations] = useState(integrationsList);
+  const [availableIntegrations, setAvailableIntegrations] = useState([]);
+  const [connectedIntegrations, setConnectedIntegrations] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
+  const [configDialog, setConfigDialog] = useState(false);
+  const [selectedIntegration, setSelectedIntegration] = useState(null);
+  const [configData, setConfigData] = useState({
+    project_id: '',
+    api_key: '',
+    settings: {},
+    is_active: true,
+  });
+  const [projects, setProjects] = useState([]);
 
-  const handleToggle = (id) => {
-    setIntegrations((prev) =>
-      prev.map((integration) =>
-        integration.id === id ? { ...integration, connected: !integration.connected } : integration
-      )
-    );
-    const integration = integrations.find((i) => i.id === id);
-    const newStatus = !integration.connected;
-    setSnackbar({
-      open: true,
-      message: `${integration.name} ${newStatus ? 'connected' : 'disconnected'} successfully!`,
-      severity: newStatus ? 'success' : 'info',
-    });
+  // Fetch available integrations and user's connected integrations
+  useEffect(() => {
+    if (token) {
+      fetchIntegrations();
+      fetchProjects();
+    }
+  }, [token]);
+
+  const fetchIntegrations = async () => {
+    try {
+      setLoading(true);
+
+      if (!token) {
+        console.warn('No token available');
+        setAvailableIntegrations([]);
+        setConnectedIntegrations([]);
+        return;
+      }
+
+      console.log('Fetching integrations from:', `${API_BASE}/api/integrations/available`);
+
+      const [availableRes, connectedRes] = await Promise.all([
+        axios.get(`${API_BASE}/api/integrations/available`, {
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+        axios.get(`${API_BASE}/api/integrations`, {
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+      ]);
+
+      console.log('Available integrations response:', availableRes.data);
+      console.log('Connected integrations response:', connectedRes.data);
+
+      // Safe extraction of available integrations
+      const availableData = availableRes.data || {};
+      setAvailableIntegrations(availableData.integrations || []);
+
+      // Safe extraction of connected integrations
+      const connectedData = connectedRes.data || [];
+      setConnectedIntegrations(Array.isArray(connectedData) ? connectedData : []);
+    } catch (error) {
+      console.error('Error fetching integrations:', error);
+      console.error('Error response:', error.response?.data);
+      console.error('Error status:', error.response?.status);
+
+      const errorMessage =
+        error.response?.data?.detail || error.message || 'Failed to load integrations';
+      showSnackbar(errorMessage, 'error');
+
+      setAvailableIntegrations([]);
+      setConnectedIntegrations([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchProjects = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/api/projects`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setProjects(res.data);
+    } catch (error) {
+      console.error('Error fetching projects:', error);
+    }
+  };
+
+  const showSnackbar = (message, severity = 'success') => {
+    setSnackbar({ open: true, message, severity });
   };
 
   const handleCloseSnackbar = () => {
     setSnackbar({ ...snackbar, open: false });
   };
 
-  const filteredIntegrations = integrations.filter((integration) => {
+  const handleConnect = (integration) => {
+    setSelectedIntegration(integration);
+    setConfigData({
+      project_id: projects.length > 0 ? projects[0].id : '',
+      api_key: '',
+      settings: {},
+      is_active: true,
+    });
+    setConfigDialog(true);
+  };
+
+  const handleConfigure = async () => {
+    if (!selectedIntegration) return;
+
+    try {
+      console.log('Connecting integration:', selectedIntegration.id);
+      console.log('Config data:', configData);
+
+      const response = await axios.post(
+        `${API_BASE}/api/integrations/${selectedIntegration.id}/connect`,
+        {
+          project_id: configData.project_id,
+          config_data: {
+            type: selectedIntegration.category,
+            api_key: configData.api_key,
+            settings: configData.settings,
+            is_active: configData.is_active,
+          },
+        },
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      console.log('Connection response:', response.data);
+
+      showSnackbar(`${selectedIntegration.name} connected successfully!`, 'success');
+      setConfigDialog(false);
+      fetchIntegrations(); // Refresh the list
+    } catch (error) {
+      console.error('Error connecting integration:', error);
+      console.error('Error response:', error.response?.data);
+      showSnackbar(error.response?.data?.detail || 'Failed to connect integration', 'error');
+    }
+  };
+
+  const handleDisconnect = async (integrationId, integrationName) => {
+    try {
+      await axios.delete(`${API_BASE}/api/integrations/${integrationId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      showSnackbar(`${integrationName} disconnected successfully`, 'info');
+      fetchIntegrations(); // Refresh the list
+    } catch (error) {
+      console.error('Error disconnecting integration:', error);
+      showSnackbar('Failed to disconnect integration', 'error');
+    }
+  };
+
+  const isConnected = (integrationId) => {
+    return connectedIntegrations.some((conn) => conn.provider === integrationId);
+  };
+
+  const getConnectedIntegrationId = (integrationId) => {
+    const integration = connectedIntegrations.find((conn) => conn.provider === integrationId);
+    return integration?.id;
+  };
+
+  const filteredIntegrations = availableIntegrations.filter((integration) => {
     const matchesSearch =
       integration.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       integration.description.toLowerCase().includes(searchTerm.toLowerCase());
@@ -215,8 +239,8 @@ const Integrations = () => {
     return matchesSearch && matchesCategory;
   });
 
-  const connectedCount = integrations.filter((i) => i.connected).length;
-  const totalCount = integrations.length;
+  const connectedCount = connectedIntegrations.length;
+  const totalCount = availableIntegrations.length;
 
   return (
     <Box sx={{ bgcolor: '#080C14', minHeight: '100vh', pt: 2 }}>
@@ -272,7 +296,9 @@ const Integrations = () => {
                       selectedCategory === cat.value
                         ? alpha(G_START, 0.2)
                         : 'rgba(255,255,255,0.05)',
-                    border: `1px solid ${selectedCategory === cat.value ? G_START : 'rgba(255,255,255,0.1)'}`,
+                    border: `1px solid ${
+                      selectedCategory === cat.value ? G_START : 'rgba(255,255,255,0.1)'
+                    }`,
                     color: selectedCategory === cat.value ? G_START : 'rgba(255,255,255,0.7)',
                     '&:hover': {
                       bgcolor: alpha(G_START, 0.1),
@@ -313,7 +339,7 @@ const Integrations = () => {
               <Box sx={{ width: { xs: '100%', sm: 300 } }}>
                 <LinearProgress
                   variant="determinate"
-                  value={(connectedCount / totalCount) * 100}
+                  value={totalCount > 0 ? (connectedCount / totalCount) * 100 : 0}
                   sx={{
                     height: 8,
                     borderRadius: 4,
@@ -326,118 +352,267 @@ const Integrations = () => {
           </CardContent>
         </Card>
 
-        <Grid container spacing={3}>
-          {filteredIntegrations.map((integration, index) => (
-            <Grid item xs={12} sm={6} md={4} key={integration.id}>
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: index * 0.05 }}
-              >
-                <Card
-                  sx={{
-                    background: 'rgba(255,255,255,0.03)',
-                    border: `1px solid ${alpha(integration.color, 0.2)}`,
-                    borderRadius: '16px',
-                    transition: 'transform 0.3s',
-                    '&:hover': {
-                      transform: 'translateY(-4px)',
-                      borderColor: alpha(integration.color, 0.5),
-                    },
-                  }}
-                >
-                  <CardContent>
-                    <Box
+        {loading ? (
+          <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
+            <LinearProgress sx={{ width: 200 }} />
+          </Box>
+        ) : (
+          <Grid container spacing={3}>
+            {filteredIntegrations.map((integration, index) => {
+              const connected = isConnected(integration.id);
+              return (
+                <Grid item xs={12} sm={6} md={4} key={integration.id}>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: index * 0.05 }}
+                  >
+                    <Card
                       sx={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        mb: 2,
-                      }}
-                    >
-                      <Avatar
-                        sx={{
-                          bgcolor: alpha(integration.color, 0.2),
-                          width: 48,
-                          height: 48,
-                          color: integration.color,
-                        }}
-                      >
-                        {integration.icon}
-                      </Avatar>
-                      {integration.popular && (
-                        <Chip
-                          label="Popular"
-                          size="small"
-                          sx={{
-                            bgcolor: alpha(G_START, 0.2),
-                            color: G_START,
-                            fontSize: '0.7rem',
-                          }}
-                        />
-                      )}
-                    </Box>
-                    <Typography variant="h6" fontWeight="bold" sx={{ color: 'white', mb: 0.5 }}>
-                      {integration.name}
-                    </Typography>
-                    <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.6)', mb: 2 }}>
-                      {integration.description}
-                    </Typography>
-                    <Box
-                      sx={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                      }}
-                    >
-                      <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.4)' }}>
-                        {integration.connected ? 'Connected' : 'Not connected'}
-                      </Typography>
-                      <Switch
-                        checked={integration.connected}
-                        onChange={() => handleToggle(integration.id)}
-                        sx={{
-                          '& .MuiSwitch-switchBase.Mui-checked': {
-                            color: G_START,
-                          },
-                          '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': {
-                            backgroundColor: G_START,
-                          },
-                        }}
-                      />
-                    </Box>
-                  </CardContent>
-                  <CardActions sx={{ p: 2, pt: 0 }}>
-                    <Button
-                      fullWidth
-                      variant="outlined"
-                      startIcon={integration.connected ? <LinkIcon /> : <Api />}
-                      onClick={() => handleToggle(integration.id)}
-                      sx={{
-                        borderColor: 'rgba(255,255,255,0.2)',
-                        color: integration.connected ? G_MID : 'white',
+                        background: 'rgba(255,255,255,0.03)',
+                        border: `1px solid ${alpha(integration.color, 0.2)}`,
+                        borderRadius: '16px',
+                        transition: 'transform 0.3s',
                         '&:hover': {
-                          borderColor: integration.color,
-                          bgcolor: alpha(integration.color, 0.1),
+                          transform: 'translateY(-4px)',
+                          borderColor: alpha(integration.color, 0.5),
                         },
                       }}
                     >
-                      {integration.connected ? 'Configure' : 'Connect'}
-                    </Button>
-                  </CardActions>
-                </Card>
-              </motion.div>
-            </Grid>
-          ))}
-        </Grid>
+                      <CardContent>
+                        <Box
+                          sx={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            mb: 2,
+                          }}
+                        >
+                          <Avatar
+                            sx={{
+                              bgcolor: alpha(integration.color, 0.2),
+                              width: 48,
+                              height: 48,
+                              color: integration.color,
+                            }}
+                          >
+                            {/* Map icon names to components */}
+                            {integration.icon === 'Payment' && <Payment />}
+                            {integration.icon === 'Mail' && <Mail />}
+                            {integration.icon === 'WhatsApp' && <WhatsApp />}
+                            {integration.icon === 'Instagram' && <Instagram />}
+                            {integration.icon === 'Facebook' && <Facebook />}
+                            {integration.icon === 'Analytics' && <Analytics />}
+                            {integration.icon === 'Storage' && <Storage />}
+                            {integration.icon === 'Security' && <Security />}
+                            {integration.icon === 'Api' && <Api />}
+                            {integration.icon === 'MusicNote' && <MusicNote />}
+                            {integration.icon === 'Chat' && <Chat />}
+                            {integration.icon === 'CloudUpload' && <CloudUpload />}
+                          </Avatar>
+                          {integration.popular && (
+                            <Chip
+                              label="Popular"
+                              size="small"
+                              sx={{
+                                bgcolor: alpha(G_START, 0.2),
+                                color: G_START,
+                                fontSize: '0.7rem',
+                              }}
+                            />
+                          )}
+                          {connected && (
+                            <Chip
+                              label="Connected"
+                              size="small"
+                              sx={{
+                                bgcolor: alpha(G_MID, 0.2),
+                                color: G_MID,
+                                fontSize: '0.7rem',
+                              }}
+                            />
+                          )}
+                        </Box>
+                        <Typography variant="h6" fontWeight="bold" sx={{ color: 'white', mb: 0.5 }}>
+                          {integration.name}
+                        </Typography>
+                        <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.6)', mb: 2 }}>
+                          {integration.description}
+                        </Typography>
+                      </CardContent>
+                      <CardActions sx={{ p: 2, pt: 0 }}>
+                        {connected ? (
+                          <Button
+                            fullWidth
+                            variant="outlined"
+                            color="error"
+                            onClick={() =>
+                              handleDisconnect(
+                                getConnectedIntegrationId(integration.id),
+                                integration.name
+                              )
+                            }
+                            sx={{
+                              borderColor: 'rgba(255,0,0,0.3)',
+                              color: '#ff4444',
+                              '&:hover': {
+                                borderColor: '#ff4444',
+                                bgcolor: alpha('#ff4444', 0.1),
+                              },
+                            }}
+                          >
+                            Disconnect
+                          </Button>
+                        ) : (
+                          <Button
+                            fullWidth
+                            variant="contained"
+                            onClick={() => handleConnect(integration)}
+                            sx={{
+                              background: GRAD,
+                              color: 'white',
+                              '&:hover': {
+                                opacity: 0.9,
+                              },
+                            }}
+                          >
+                            Connect
+                          </Button>
+                        )}
+                      </CardActions>
+                    </Card>
+                  </motion.div>
+                </Grid>
+              );
+            })}
+          </Grid>
+        )}
 
-        {filteredIntegrations.length === 0 && (
+        {filteredIntegrations.length === 0 && !loading && (
           <Box sx={{ textAlign: 'center', py: 8 }}>
             <Typography sx={{ color: 'rgba(255,255,255,0.5)' }}>
               No integrations found. Try adjusting your search.
             </Typography>
           </Box>
         )}
+
+        {/* Configuration Dialog */}
+        <Dialog
+          open={configDialog}
+          onClose={() => setConfigDialog(false)}
+          maxWidth="md"
+          fullWidth
+          PaperProps={{
+            sx: {
+              background: '#0D1220',
+              border: '1px solid rgba(255,255,255,0.08)',
+              borderRadius: '20px',
+            },
+          }}
+        >
+          <DialogTitle
+            sx={{
+              color: 'white',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+            }}
+          >
+            Connect {selectedIntegration?.name}
+            <IconButton
+              onClick={() => setConfigDialog(false)}
+              sx={{ color: 'rgba(255,255,255,0.5)' }}
+            >
+              <Close />
+            </IconButton>
+          </DialogTitle>
+          <DialogContent>
+            <Box sx={{ mt: 2 }}>
+              {projects.length > 0 ? (
+                <>
+                  <TextField
+                    select
+                    fullWidth
+                    label="Select Project"
+                    value={configData.project_id}
+                    onChange={(e) => setConfigData({ ...configData, project_id: e.target.value })}
+                    sx={{
+                      mb: 2,
+                      '& .MuiOutlinedInput-root': {
+                        color: 'white',
+                        '& fieldset': { borderColor: 'rgba(255,255,255,0.2)' },
+                      },
+                      '& .MuiInputLabel-root': { color: 'rgba(255,255,255,0.6)' },
+                    }}
+                  >
+                    {projects.map((project) => (
+                      <MenuItem key={project.id} value={project.id}>
+                        {project.name}
+                      </MenuItem>
+                    ))}
+                  </TextField>
+
+                  <TextField
+                    fullWidth
+                    label="API Key / Access Token"
+                    value={configData.api_key}
+                    onChange={(e) => setConfigData({ ...configData, api_key: e.target.value })}
+                    sx={{
+                      mb: 2,
+                      '& .MuiOutlinedInput-root': {
+                        color: 'white',
+                        '& fieldset': { borderColor: 'rgba(255,255,255,0.2)' },
+                      },
+                      '& .MuiInputLabel-root': { color: 'rgba(255,255,255,0.6)' },
+                    }}
+                  />
+
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mt: 1 }}>
+                    <Switch
+                      checked={configData.is_active}
+                      onChange={(e) =>
+                        setConfigData({ ...configData, is_active: e.target.checked })
+                      }
+                      sx={{
+                        '& .MuiSwitch-switchBase.Mui-checked': {
+                          color: G_START,
+                        },
+                        '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': {
+                          backgroundColor: G_START,
+                        },
+                      }}
+                    />
+                    <Typography sx={{ color: 'rgba(255,255,255,0.7)' }}>
+                      Enable this integration
+                    </Typography>
+                  </Box>
+                </>
+              ) : (
+                <Alert severity="warning" sx={{ bgcolor: alpha('#ff9800', 0.1), color: '#ff9800' }}>
+                  You need to create a project first before connecting integrations.
+                </Alert>
+              )}
+            </Box>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setConfigDialog(false)} sx={{ color: 'rgba(255,255,255,0.6)' }}>
+              Cancel
+            </Button>
+            <Button
+              variant="contained"
+              onClick={handleConfigure}
+              disabled={!configData.project_id || !configData.api_key}
+              sx={{
+                background: GRAD,
+                borderRadius: '999px',
+                textTransform: 'none',
+                '&:hover': { opacity: 0.9 },
+              }}
+            >
+              Connect Integration
+            </Button>
+          </DialogActions>
+        </Dialog>
 
         <Snackbar
           open={snackbar.open}
@@ -448,7 +623,19 @@ const Integrations = () => {
           <Alert
             onClose={handleCloseSnackbar}
             severity={snackbar.severity}
-            sx={{ width: '100%', bgcolor: '#1A1F2A', color: 'white' }}
+            sx={{
+              width: '100%',
+              bgcolor: '#1A1F2A',
+              color: 'white',
+              '& .MuiAlert-icon': {
+                color:
+                  snackbar.severity === 'success'
+                    ? G_MID
+                    : snackbar.severity === 'error'
+                      ? '#ff4444'
+                      : G_START,
+              },
+            }}
           >
             {snackbar.message}
           </Alert>

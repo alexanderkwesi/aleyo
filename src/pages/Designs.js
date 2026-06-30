@@ -1,4 +1,4 @@
-// Designs.js
+// Designs.js - Updated to fetch from API
 import React, { useState, useEffect } from 'react';
 import {
   Box,
@@ -50,15 +50,20 @@ import {
 } from '@mui/icons-material';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
+import axios from 'axios';
 
 const G_START = '#4F6EF7';
 const G_MID = '#2DBCB6';
 const G_END = '#3ED67C';
 const GRAD = `linear-gradient(135deg, ${G_START} 0%, ${G_MID} 50%, ${G_END} 100%)`;
 
-const templates = [
+// API Base URL
+const API_URL = process.env.REACT_APP_API_URL || 'http://127.0.0.1:8000';
+
+// Default templates as fallback when API fails
+const defaultTemplates = [
   {
-    id: 1,
+    id: '1',
     name: 'Modern Minimalist',
     category: 'business',
     description: 'Clean and professional design perfect for corporate websites',
@@ -67,7 +72,7 @@ const templates = [
     reviews: 234,
     features: ['Responsive', 'SEO Optimized', 'Fast Loading'],
     popular: true,
-    icon: <Business />,
+    icon: 'Business',
     color: '#A59B8C',
     colors: {
       primaryColor: '#A59B8C',
@@ -76,127 +81,41 @@ const templates = [
       backgroundColor: '#FAF9F7',
       textColor: '#2C2C2C',
       headingColor: '#1A1A1A',
+      heroTitle: 'Modern Minimalist Design',
+      heroSubtitle: 'Clean, professional, and effective',
     },
   },
-  {
-    id: 2,
-    name: 'Creative Agency',
-    category: 'portfolio',
-    description: 'Bold and artistic layout for creative professionals',
-    image: 'https://placehold.co/600x400/2C6E6B/FFFFFF?text=Creative+Agency',
-    rating: 4.9,
-    reviews: 567,
-    features: ['Animations', 'Portfolio Grid', 'Contact Form'],
-    popular: true,
-    icon: <DesignServices />,
-    color: '#2C6E6B',
-    colors: {
-      primaryColor: '#2C6E6B',
-      secondaryColor: '#FF6B6B',
-      accentColor: '#4ECDC4',
-      backgroundColor: '#FFFFFF',
-      textColor: '#2C3E50',
-      headingColor: '#1A2A3A',
-    },
-  },
-  {
-    id: 3,
-    name: 'Shop Modern',
-    category: 'ecommerce',
-    description: 'Feature-rich e-commerce template with product showcase',
-    image: 'https://placehold.co/600x400/1F2A2E/FFFFFF?text=Shop+Modern',
-    rating: 4.7,
-    reviews: 892,
-    features: ['Product Gallery', 'Cart Integration', 'Payment Ready'],
-    popular: true,
-    icon: <Storefront />,
-    color: '#1F2A2E',
-    colors: {
-      primaryColor: '#1F2A2E',
-      secondaryColor: '#E67E22',
-      accentColor: '#F39C12',
-      backgroundColor: '#FFFFFF',
-      textColor: '#2C3E50',
-      headingColor: '#1F2A2E',
-    },
-  },
-  {
-    id: 4,
-    name: 'EduSmart',
-    category: 'education',
-    description: 'Engaging design for online courses and educational platforms',
-    image: 'https://placehold.co/600x400/4A5D73/FFFFFF?text=EduSmart',
-    rating: 4.6,
-    reviews: 156,
-    features: ['Course Layout', 'Video Support', 'Student Dashboard'],
-    popular: false,
-    icon: <School />,
-    color: '#4A5D73',
-    colors: {
-      primaryColor: '#4A5D73',
-      secondaryColor: '#7F8C8D',
-      accentColor: '#3498DB',
-      backgroundColor: '#F8F9FA',
-      textColor: '#2C3E50',
-      headingColor: '#2C3E50',
-    },
-  },
-  {
-    id: 5,
-    name: 'Foodie Delight',
-    category: 'restaurant',
-    description: 'Appetizing design for restaurants and cafes',
-    image: 'https://placehold.co/600x400/7B3E19/FFFFFF?text=Foodie+Delight',
-    rating: 4.8,
-    reviews: 423,
-    features: ['Menu Display', 'Reservation System', 'Gallery'],
-    popular: true,
-    icon: <Restaurant />,
-    color: '#7B3E19',
-    colors: {
-      primaryColor: '#7B3E19',
-      secondaryColor: '#E67E22',
-      accentColor: '#F1C40F',
-      backgroundColor: '#FFF9F5',
-      textColor: '#4A2C1A',
-      headingColor: '#7B3E19',
-    },
-  },
-  {
-    id: 6,
-    name: 'Tech Startup',
-    category: 'business',
-    description: 'Modern template for tech companies and startups',
-    image: 'https://placehold.co/600x400/283655/FFFFFF?text=Tech+Startup',
-    rating: 4.9,
-    reviews: 678,
-    features: ['Hero Section', 'Feature Grid', 'Team Showcase'],
-    popular: false,
-    icon: <Code />,
-    color: '#283655',
-    colors: {
-      primaryColor: '#283655',
-      secondaryColor: '#4D648D',
-      accentColor: '#1E81B0',
-      backgroundColor: '#0A0F1A',
-      textColor: '#E0E0E0',
-      headingColor: '#FFFFFF',
-    },
-  },
+  // Add other default templates here...
 ];
 
 const categories = [
-  { value: 'all', label: 'All Templates', icon: <DesignServices /> },
-  { value: 'business', label: 'Business', icon: <Business /> },
-  { value: 'portfolio', label: 'Portfolio', icon: <DesignServices /> },
-  { value: 'ecommerce', label: 'E-Commerce', icon: <Storefront /> },
-  { value: 'education', label: 'Education', icon: <School /> },
-  { value: 'restaurant', label: 'Restaurant', icon: <Restaurant /> },
+  { value: 'all', label: 'All Templates', icon: 'DesignServices' },
+  { value: 'business', label: 'Business', icon: 'Business' },
+  { value: 'portfolio', label: 'Portfolio', icon: 'DesignServices' },
+  { value: 'ecommerce', label: 'E-Commerce', icon: 'Storefront' },
+  { value: 'education', label: 'Education', icon: 'School' },
+  { value: 'restaurant', label: 'Restaurant', icon: 'Restaurant' },
 ];
+
+// Helper function to render icon from string
+const renderIcon = (iconName) => {
+  const iconMap = {
+    Business: <Business />,
+    DesignServices: <DesignServices />,
+    Storefront: <Storefront />,
+    School: <School />,
+    Restaurant: <Restaurant />,
+    Code: <Code />,
+  };
+  return iconMap[iconName] || <DesignServices />;
+};
 
 const Designs = ({ setCurrentProject = () => {} }) => {
   const theme = useTheme();
   const navigate = useNavigate();
+  const [templates, setTemplates] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [favorites, setFavorites] = useState([]);
@@ -206,7 +125,38 @@ const Designs = ({ setCurrentProject = () => {} }) => {
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState('');
   const [snackbarSeverity, setSnackbarSeverity] = useState('success');
-  const [loading, setLoading] = useState(false);
+  const [useTemplateLoading, setUseTemplateLoading] = useState(false);
+
+  // Fetch designs from API
+  useEffect(() => {
+    const fetchDesigns = async () => {
+      setLoading(true);
+      try {
+        const token = localStorage.getItem('accessToken');
+        const response = await axios.get(`${API_URL}/api/designs/all`, {
+          headers: {
+            Authorization: token ? `Bearer ${token}` : '',
+          },
+        });
+
+        if (response.data && response.data.length > 0) {
+          setTemplates(response.data);
+        } else {
+          // If no designs in database, use default templates
+          setTemplates(defaultTemplates);
+        }
+      } catch (err) {
+        console.error('Error fetching designs:', err);
+        // Fallback to default templates
+        setTemplates(defaultTemplates);
+        setError('Could not load designs from server. Using default templates.');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchDesigns();
+  }, []);
 
   // Load favorites from localStorage
   useEffect(() => {
@@ -232,22 +182,58 @@ const Designs = ({ setCurrentProject = () => {} }) => {
   };
 
   const handleUseTemplate = (template) => {
-    setLoading(true);
+    setUseTemplateLoading(true);
     try {
+      // Create a clean copy of template without React elements
+      const cleanTemplate = {
+        id: template.id,
+        name: template.name,
+        category: template.category,
+        description: template.description,
+        image: template.image,
+        rating: template.rating,
+        reviews: template.reviews,
+        features: template.features,
+        popular: template.popular,
+        color: template.color,
+        colors: template.colors,
+      };
+
       // Save the template colors to localStorage
       localStorage.setItem('selectedDesignColors', JSON.stringify(template.colors));
 
+      // Create a new project with template data
+      const projectId = `project_${Date.now()}`;
       const newProject = {
-        id: Date.now(),
+        id: projectId,
         name: template.name,
         type: template.category,
-        lastEdited: new Date().toISOString().split('T')[0],
+        lastEdited: new Date().toISOString(),
         status: 'draft',
         credits: 100,
         design: template.name,
         templateId: template.id,
         colors: template.colors,
+        components: [],
+        textElements: [],
+        imageElements: [],
+        uploadedImages: [],
+        styles: template.colors,
+        pages: [
+          {
+            id: 'page-1',
+            name: 'Home',
+            components: [],
+            textElements: [],
+            imageElements: [],
+          },
+        ],
       };
+
+      // Persist to localStorage
+      localStorage.setItem(`project_${projectId}`, JSON.stringify(newProject));
+      localStorage.setItem('latest_project_id', projectId);
+      localStorage.setItem('latest_project_data', JSON.stringify(newProject));
 
       if (setCurrentProject && typeof setCurrentProject === 'function') {
         setCurrentProject(newProject);
@@ -255,9 +241,13 @@ const Designs = ({ setCurrentProject = () => {} }) => {
         setSnackbarSeverity('success');
         setSnackbarOpen(true);
 
-        // Small delay to show success message before navigation
         setTimeout(() => {
-          navigate('/studio');
+          navigate(`/studio?design=${newProject.name}`, {
+            state: {
+              design: cleanTemplate,
+              project: newProject,
+            },
+          });
         }, 500);
       } else {
         console.error('setCurrentProject is not a function');
@@ -271,7 +261,7 @@ const Designs = ({ setCurrentProject = () => {} }) => {
       setSnackbarSeverity('error');
       setSnackbarOpen(true);
     } finally {
-      setLoading(false);
+      setUseTemplateLoading(false);
     }
   };
 
@@ -299,6 +289,22 @@ const Designs = ({ setCurrentProject = () => {} }) => {
     setSnackbarOpen(false);
   };
 
+  if (loading) {
+    return (
+      <Box
+        sx={{
+          bgcolor: '#080C14',
+          minHeight: '100vh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <CircularProgress sx={{ color: G_START }} />
+      </Box>
+    );
+  }
+
   return (
     <Box sx={{ bgcolor: '#080C14', minHeight: '100vh', pt: 2 }}>
       <Container maxWidth="xl" sx={{ py: 4 }}>
@@ -314,6 +320,14 @@ const Designs = ({ setCurrentProject = () => {} }) => {
             Choose from our collection of professionally designed templates. Each template comes
             with a complete color scheme that will be automatically applied.
           </Typography>
+          {error && (
+            <Alert
+              severity="warning"
+              sx={{ mb: 2, bgcolor: 'rgba(255,165,0,0.1)', color: '#FFA500' }}
+            >
+              {error}
+            </Alert>
+          )}
         </motion.div>
 
         <Grid container spacing={3} sx={{ mb: 4 }}>
@@ -347,7 +361,7 @@ const Designs = ({ setCurrentProject = () => {} }) => {
               {categories.map((cat) => (
                 <Chip
                   key={cat.value}
-                  icon={cat.icon}
+                  icon={renderIcon(cat.icon)}
                   label={cat.label}
                   onClick={() => setSelectedCategory(cat.value)}
                   sx={{
@@ -369,161 +383,182 @@ const Designs = ({ setCurrentProject = () => {} }) => {
 
         <Grid container spacing={3}>
           <AnimatePresence>
-            {displayedTemplates.map((template, index) => (
-              <Grid item xs={12} sm={6} md={4} key={template.id}>
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, scale: 0.9 }}
-                  transition={{ delay: index * 0.05 }}
-                >
-                  <Card
-                    sx={{
-                      background: `linear-gradient(135deg, ${template.colors.primaryColor}20, ${template.colors.secondaryColor}20)`,
-                      border: `1px solid ${alpha(G_START, 0.2)}`,
-                      borderRadius: '16px',
-                      overflow: 'hidden',
-                      transition: 'transform 0.3s, box-shadow 0.3s',
-                      '&:hover': {
-                        transform: 'translateY(-8px)',
-                        boxShadow: `0 12px 24px ${alpha(template.colors.primaryColor, 0.3)}`,
-                      },
-                    }}
+            {displayedTemplates.length > 0 ? (
+              displayedTemplates.map((template, index) => (
+                <Grid item xs={12} sm={6} md={4} key={template.id}>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.9 }}
+                    transition={{ delay: index * 0.05 }}
                   >
-                    <Box sx={{ position: 'relative' }}>
-                      <Box
-                        component="img"
-                        src={template.image}
-                        alt={template.name}
-                        sx={{
-                          width: '100%',
-                          height: 200,
-                          objectFit: 'cover',
-                        }}
-                      />
-                      {template.popular && (
-                        <Chip
-                          label="Popular"
-                          size="small"
+                    <Card
+                      sx={{
+                        background: `linear-gradient(135deg, ${template.colors?.primaryColor || '#4F6EF7'}20, ${template.colors?.secondaryColor || '#2DBCB6'}20)`,
+                        border: `1px solid ${alpha(G_START, 0.2)}`,
+                        borderRadius: '16px',
+                        overflow: 'hidden',
+                        transition: 'transform 0.3s, box-shadow 0.3s',
+                        '&:hover': {
+                          transform: 'translateY(-8px)',
+                          boxShadow: `0 12px 24px ${alpha(template.colors?.primaryColor || '#4F6EF7', 0.3)}`,
+                        },
+                      }}
+                    >
+                      <Box sx={{ position: 'relative' }}>
+                        <Box
+                          component="img"
+                          src={template.image}
+                          alt={template.name}
+                          sx={{
+                            width: '100%',
+                            height: 200,
+                            objectFit: 'cover',
+                          }}
+                        />
+                        {template.popular && (
+                          <Chip
+                            label="Popular"
+                            size="small"
+                            sx={{
+                              position: 'absolute',
+                              top: 12,
+                              left: 12,
+                              bgcolor: G_START,
+                              color: 'white',
+                              fontWeight: 'bold',
+                            }}
+                          />
+                        )}
+                        <IconButton
+                          onClick={() => handleFavorite(template.id)}
                           sx={{
                             position: 'absolute',
                             top: 12,
-                            left: 12,
-                            bgcolor: G_START,
-                            color: 'white',
-                            fontWeight: 'bold',
-                          }}
-                        />
-                      )}
-                      <IconButton
-                        onClick={() => handleFavorite(template.id)}
-                        sx={{
-                          position: 'absolute',
-                          top: 12,
-                          right: 12,
-                          bgcolor: 'rgba(0,0,0,0.5)',
-                          '&:hover': { bgcolor: 'rgba(0,0,0,0.7)' },
-                        }}
-                      >
-                        {favorites.includes(template.id) ? (
-                          <Favorite sx={{ color: '#ff4d4d' }} />
-                        ) : (
-                          <FavoriteBorder sx={{ color: 'white' }} />
-                        )}
-                      </IconButton>
-                    </Box>
-                    <CardContent>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-                        <Avatar
-                          sx={{
-                            bgcolor: alpha(template.colors.primaryColor, 0.2),
-                            width: 32,
-                            height: 32,
+                            right: 12,
+                            bgcolor: 'rgba(0,0,0,0.5)',
+                            '&:hover': { bgcolor: 'rgba(0,0,0,0.7)' },
                           }}
                         >
-                          {template.icon}
-                        </Avatar>
-                        <Typography variant="h6" fontWeight="bold" sx={{ color: 'white' }}>
-                          {template.name}
-                        </Typography>
+                          {favorites.includes(template.id) ? (
+                            <Favorite sx={{ color: '#ff4d4d' }} />
+                          ) : (
+                            <FavoriteBorder sx={{ color: 'white' }} />
+                          )}
+                        </IconButton>
                       </Box>
-                      <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.6)', mb: 1 }}>
-                        {template.description}
-                      </Typography>
+                      <CardContent>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                          <Avatar
+                            sx={{
+                              bgcolor: alpha(template.colors?.primaryColor || '#4F6EF7', 0.2),
+                              width: 32,
+                              height: 32,
+                            }}
+                          >
+                            {renderIcon(template.icon)}
+                          </Avatar>
+                          <Typography variant="h6" fontWeight="bold" sx={{ color: 'white' }}>
+                            {template.name}
+                          </Typography>
+                        </Box>
+                        <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.6)', mb: 1 }}>
+                          {template.description}
+                        </Typography>
 
-                      {/* Color Palette Preview */}
-                      <Box sx={{ display: 'flex', gap: 0.5, mb: 1 }}>
-                        {Object.values(template.colors)
-                          .slice(0, 5)
-                          .map((color, idx) => (
-                            <Tooltip key={idx} title={`Color ${idx + 1}`}>
-                              <Box
+                        {/* Color Palette Preview */}
+                        {template.colors && (
+                          <Box sx={{ display: 'flex', gap: 0.5, mb: 1 }}>
+                            {Object.values(template.colors)
+                              .slice(0, 5)
+                              .map((color, idx) => (
+                                <Tooltip key={idx} title={`Color ${idx + 1}`}>
+                                  <Box
+                                    sx={{
+                                      width: 24,
+                                      height: 24,
+                                      bgcolor: color,
+                                      borderRadius: '4px',
+                                      border: '1px solid rgba(255,255,255,0.2)',
+                                    }}
+                                  />
+                                </Tooltip>
+                              ))}
+                          </Box>
+                        )}
+
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                          <Rating
+                            value={template.rating || 4.5}
+                            precision={0.1}
+                            size="small"
+                            readOnly
+                          />
+                          <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)' }}>
+                            ({template.reviews || 0})
+                          </Typography>
+                        </Box>
+                        <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+                          {(template.features || ['Responsive', 'Modern'])
+                            .slice(0, 3)
+                            .map((feature) => (
+                              <Chip
+                                key={feature}
+                                label={feature}
+                                size="small"
                                 sx={{
-                                  width: 24,
-                                  height: 24,
-                                  bgcolor: color,
-                                  borderRadius: '4px',
-                                  border: '1px solid rgba(255,255,255,0.2)',
+                                  bgcolor: 'rgba(255,255,255,0.05)',
+                                  color: 'rgba(255,255,255,0.6)',
+                                  fontSize: '0.7rem',
                                 }}
                               />
-                            </Tooltip>
-                          ))}
-                      </Box>
-
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-                        <Rating value={template.rating} precision={0.1} size="small" readOnly />
-                        <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)' }}>
-                          ({template.reviews})
-                        </Typography>
-                      </Box>
-                      <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
-                        {template.features.slice(0, 3).map((feature) => (
-                          <Chip
-                            key={feature}
-                            label={feature}
-                            size="small"
-                            sx={{
-                              bgcolor: 'rgba(255,255,255,0.05)',
-                              color: 'rgba(255,255,255,0.6)',
-                              fontSize: '0.7rem',
-                            }}
-                          />
-                        ))}
-                      </Box>
-                    </CardContent>
-                    <CardActions sx={{ p: 2, pt: 0, gap: 1 }}>
-                      <Button
-                        variant="outlined"
-                        size="small"
-                        startIcon={<Visibility />}
-                        onClick={() => handlePreview(template)}
-                        sx={{
-                          borderColor: 'rgba(255,255,255,0.2)',
-                          color: 'white',
-                          '&:hover': { borderColor: G_START },
-                        }}
-                      >
-                        Preview
-                      </Button>
-                      <Button
-                        variant="contained"
-                        size="small"
-                        endIcon={loading ? <CircularProgress size={16} /> : <ArrowForward />}
-                        onClick={() => handleUseTemplate(template)}
-                        disabled={loading}
-                        sx={{
-                          background: `linear-gradient(135deg, ${template.colors.primaryColor}, ${template.colors.secondaryColor})`,
-                          flex: 1,
-                          '&:hover': { opacity: 0.9 },
-                        }}
-                      >
-                        Use Template
-                      </Button>
-                    </CardActions>
-                  </Card>
-                </motion.div>
+                            ))}
+                        </Box>
+                      </CardContent>
+                      <CardActions sx={{ p: 2, pt: 0, gap: 1 }}>
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          startIcon={<Visibility />}
+                          onClick={() => handlePreview(template)}
+                          sx={{
+                            borderColor: 'rgba(255,255,255,0.2)',
+                            color: 'white',
+                            '&:hover': { borderColor: G_START },
+                          }}
+                        >
+                          Preview
+                        </Button>
+                        <Button
+                          variant="contained"
+                          size="small"
+                          endIcon={
+                            useTemplateLoading ? <CircularProgress size={16} /> : <ArrowForward />
+                          }
+                          onClick={() => handleUseTemplate(template)}
+                          disabled={useTemplateLoading}
+                          sx={{
+                            background: `linear-gradient(135deg, ${template.colors?.primaryColor || '#4F6EF7'}, ${template.colors?.secondaryColor || '#2DBCB6'})`,
+                            flex: 1,
+                            '&:hover': { opacity: 0.9 },
+                          }}
+                        >
+                          Use Template
+                        </Button>
+                      </CardActions>
+                    </Card>
+                  </motion.div>
+                </Grid>
+              ))
+            ) : (
+              <Grid item xs={12}>
+                <Box sx={{ textAlign: 'center', py: 8 }}>
+                  <Typography variant="h6" sx={{ color: 'rgba(255,255,255,0.6)' }}>
+                    No templates found matching your criteria.
+                  </Typography>
+                </Box>
               </Grid>
-            ))}
+            )}
           </AnimatePresence>
         </Grid>
 
@@ -581,40 +616,44 @@ const Designs = ({ setCurrentProject = () => {} }) => {
                   {selectedTemplate.description}
                 </Typography>
 
-                <Typography variant="subtitle2" sx={{ color: G_START, mb: 1 }}>
-                  Color Scheme:
-                </Typography>
-                <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 2 }}>
-                  {Object.entries(selectedTemplate.colors).map(([key, color]) => (
-                    <Tooltip key={key} title={key}>
-                      <Box
-                        sx={{
-                          width: 40,
-                          height: 40,
-                          bgcolor: color,
-                          borderRadius: '8px',
-                          border: '1px solid rgba(255,255,255,0.2)',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                        }}
-                      >
-                        <Typography
-                          variant="caption"
-                          sx={{ color: '#fff', textShadow: '0 0 2px black' }}
-                        >
-                          {key.charAt(0)}
-                        </Typography>
-                      </Box>
-                    </Tooltip>
-                  ))}
-                </Box>
+                {selectedTemplate.colors && (
+                  <>
+                    <Typography variant="subtitle2" sx={{ color: G_START, mb: 1 }}>
+                      Color Scheme:
+                    </Typography>
+                    <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 2 }}>
+                      {Object.entries(selectedTemplate.colors).map(([key, color]) => (
+                        <Tooltip key={key} title={key}>
+                          <Box
+                            sx={{
+                              width: 40,
+                              height: 40,
+                              bgcolor: color,
+                              borderRadius: '8px',
+                              border: '1px solid rgba(255,255,255,0.2)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                            }}
+                          >
+                            <Typography
+                              variant="caption"
+                              sx={{ color: '#fff', textShadow: '0 0 2px black' }}
+                            >
+                              {key.charAt(0)}
+                            </Typography>
+                          </Box>
+                        </Tooltip>
+                      ))}
+                    </Box>
+                  </>
+                )}
 
                 <Typography variant="subtitle2" sx={{ color: G_START, mb: 1 }}>
                   Features:
                 </Typography>
                 <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 2 }}>
-                  {selectedTemplate.features.map((feature) => (
+                  {(selectedTemplate.features || ['Responsive', 'Modern']).map((feature) => (
                     <Chip
                       key={feature}
                       label={feature}
@@ -623,9 +662,9 @@ const Designs = ({ setCurrentProject = () => {} }) => {
                   ))}
                 </Box>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                  <Rating value={selectedTemplate.rating} precision={0.1} readOnly />
+                  <Rating value={selectedTemplate.rating || 4.5} precision={0.1} readOnly />
                   <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.5)' }}>
-                    {selectedTemplate.reviews} reviews
+                    {selectedTemplate.reviews || 0} reviews
                   </Typography>
                 </Box>
               </DialogContent>
@@ -639,12 +678,12 @@ const Designs = ({ setCurrentProject = () => {} }) => {
                 <Button
                   variant="contained"
                   onClick={() => handleUseTemplate(selectedTemplate)}
-                  disabled={loading}
+                  disabled={useTemplateLoading}
                   sx={{
-                    background: `linear-gradient(135deg, ${selectedTemplate.colors.primaryColor}, ${selectedTemplate.colors.secondaryColor})`,
+                    background: `linear-gradient(135deg, ${selectedTemplate.colors?.primaryColor || '#4F6EF7'}, ${selectedTemplate.colors?.secondaryColor || '#2DBCB6'})`,
                   }}
                 >
-                  {loading ? <CircularProgress size={24} /> : 'Use This Template'}
+                  {useTemplateLoading ? <CircularProgress size={24} /> : 'Use This Template'}
                 </Button>
               </DialogActions>
             </>
