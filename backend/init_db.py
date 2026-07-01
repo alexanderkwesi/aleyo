@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 
 # Database URL (adjust for your database)
-DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://postgres:superpassword@localhost:5414/aleyo')
+DATABASE_URL = os.getenv('DATABASE_URL', 'gs://aleyo-bucket/aleyo.db')
 # For PostgreSQL:
 # DATABASE_URL = 'postgresql://user:password@localhost/aleyo'
 
