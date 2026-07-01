@@ -154,7 +154,7 @@ const SignupPage = () => {
         >
           <Box sx={{ textAlign: 'center', mb: 4 }}>
             <img
-              src="logo-1.png"
+              src="/logo-1.png"
               alt="Aleyo Logo"
               style={{
                 width: 48,
