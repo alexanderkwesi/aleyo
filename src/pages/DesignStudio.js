@@ -162,6 +162,19 @@ const ContentCopy = Code;
 const EditIcon = Brush;
 const OpenWith = DragHandle;
 
+// Collision-safe unique ID generator. Date.now() alone can produce the same
+// value if two elements are created/duplicated within the same millisecond
+// (e.g. rapid clicking), which causes two array entries to share an id and
+// then behave as a single merged "ghost" element (editing/selecting/deleting
+// one affects both). Use crypto.randomUUID() where available, with a
+// timestamp+random fallback.
+const generateId = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+};
+
 // ── LOAD DESIGN FROM DESIGNS.JS ──────────────────────────────────────
 let design = [];
 try {
@@ -172,7 +185,9 @@ try {
   } else if (raw && typeof raw === 'object') {
     // Handle cases where Designs.js exports an object/map instead of an array
     // e.g. { templates: [...] } or { someKey: {...}, otherKey: {...} }
-    design = Array.isArray(raw.templates) ? raw.templates : Object.values(raw);
+    design = Array.isArray(raw.templates)
+      ? raw.templates
+      : Object.values(raw);
   } else {
     design = [];
   }
@@ -961,7 +976,7 @@ const IntegrationsPanel = ({ showSnackbar, projectId, onAddIntegration, onRemove
       return;
     }
     const newIntegration = {
-      id: Date.now().toString(),
+      id: generateId(),
       type: configData.type,
       provider: configData.provider,
       api_key: configData.api_key,
@@ -1706,6 +1721,7 @@ const DesignStudio = ({
   const [dragDropMode, setDragDropMode] = useState(false);
   const [canvasScale, setCanvasScale] = useState(1);
   const [imageUploadDialogOpen, setImageUploadDialogOpen] = useState(false);
+  const [imageUploadTarget, setImageUploadTarget] = useState(null);
   const [dragOver, setDragOver] = useState(false);
   const [publishModalOpen, setPublishModalOpen] = useState(false);
   const [websiteName, setWebsiteName] = useState('');
@@ -1724,6 +1740,7 @@ const DesignStudio = ({
   const [galleryPreviewProject, setGalleryPreviewProject] = useState(null);
   const [imageUploadMode, setImageUploadMode] = useState('mock');
   const [mockImageUrl, setMockImageUrl] = useState('');
+  const [selectedLibraryImage, setSelectedLibraryImage] = useState(null);
   const [autoSaveStatus, setAutoSaveStatus] = useState('idle');
   const [autoSaveEnabled, setAutoSaveEnabled] = useState(() => {
     const stored = localStorage.getItem('autoSaveEnabled');
@@ -2343,7 +2360,7 @@ const DesignStudio = ({
     setComponents(templateComponents);
     const defaultTexts = [
       {
-        id: Date.now().toString(),
+        id: generateId(),
         type: 'text',
         tag: 'h1',
         content: templateStyles.heroTitle || 'Welcome to Your Website',
@@ -2739,7 +2756,7 @@ const DesignStudio = ({
 
   const handleAddComponent = (type) => {
     const newComponent = {
-      id: Date.now().toString(),
+      id: generateId(),
       type,
       content: getDefaultContent(type),
       styles: {},
@@ -2842,7 +2859,7 @@ const DesignStudio = ({
   // ── Text element functions ──
   const handleAddTextElement = (textStyle) => {
     const newTextElement = {
-      id: Date.now().toString(),
+      id: generateId(),
       type: 'text',
       tag: textStyle.tag,
       content: textStyle.defaultText,
@@ -2907,7 +2924,7 @@ const DesignStudio = ({
       reader.onload = (e) => {
         const result = e.target.result;
         const newImage = {
-          id: Date.now() + Math.random().toString(36).substr(2, 9),
+          id: generateId(),
           url: result,
           name: file.name,
           size: file.size,
@@ -2961,7 +2978,7 @@ const DesignStudio = ({
       return;
     }
     const newImage = {
-      id: Date.now() + Math.random().toString(36).substr(2, 9),
+      id: generateId(),
       url,
       name: `mock-${Date.now()}.jpg`,
       size: 0,
@@ -2979,7 +2996,7 @@ const DesignStudio = ({
   const handleAddImageToCanvas = (image, imageStyle = null) => {
     const styleToUse = imageStyle || imageStyles[0];
     const newImageElement = {
-      id: Date.now().toString(),
+      id: generateId(),
       type: 'image',
       imageId: image.id,
       imageUrl: image.url,
@@ -3026,7 +3043,7 @@ const DesignStudio = ({
       const result = e.target.result;
       handleUpdateImageElement(id, { imageUrl: result });
       const newUploadedImage = {
-        id: Date.now() + Math.random().toString(36).substr(2, 9),
+        id: generateId(),
         url: result,
         name: file.name,
         size: file.size,
@@ -3059,6 +3076,7 @@ const DesignStudio = ({
       newImageElements,
       uploadedImages.filter((img) => img.id !== imageId)
     );
+    if (selectedLibraryImage?.id === imageId) setSelectedLibraryImage(null);
     showSnackbar('Image deleted from library', 'info');
   };
 
@@ -4272,6 +4290,21 @@ const DesignStudio = ({
             <EditIcon fontSize="small" />
           </IconButton>
         </Tooltip>
+        <Tooltip title="Duplicate">
+          <IconButton
+            size="small"
+            onClick={() => {
+              const newElement = { ...element, id: generateId() };
+              const newTextElements = [...textElements, newElement];
+              setTextElements(newTextElements);
+              addToHistory(components, globalStyles, newTextElements, imageElements, uploadedImages);
+              showSnackbar('Text element duplicated', 'success');
+            }}
+            sx={{ color: G_START, p: 0.5 }}
+          >
+            <ContentCopy fontSize="small" />
+          </IconButton>
+        </Tooltip>
         <Tooltip title="Delete">
           <IconButton
             size="small"
@@ -4332,6 +4365,21 @@ const DesignStudio = ({
           </IconButton>
         </Tooltip>
         <Box sx={{ width: 1, height: 20, bgcolor: alpha('#FFFFFF', 0.2) }} />
+        <Tooltip title="Duplicate">
+          <IconButton
+            size="small"
+            onClick={() => {
+              const newElement = { ...element, id: generateId() };
+              const newImageElements = [...imageElements, newElement];
+              setImageElements(newImageElements);
+              addToHistory(components, globalStyles, textElements, newImageElements, uploadedImages);
+              showSnackbar('Image duplicated', 'success');
+            }}
+            sx={{ color: G_START, p: 0.5 }}
+          >
+            <ContentCopy fontSize="small" />
+          </IconButton>
+        </Tooltip>
         <Tooltip title="Delete">
           <IconButton
             size="small"
@@ -4406,7 +4454,7 @@ const DesignStudio = ({
           <IconButton
             size="small"
             onClick={() => {
-              const newComp = { ...component, id: Date.now().toString() };
+              const newComp = { ...component, id: generateId() };
               const newComps = [...components, newComp];
               setComponents(newComps);
               addToHistory(newComps, globalStyles, textElements, imageElements, uploadedImages);
@@ -4440,7 +4488,7 @@ const DesignStudio = ({
           fontFamily: globalStyles.fontFamily,
           minHeight: '100vh',
           position: 'relative',
-          backgroundColor: globalStyles.backgroundColor,
+          overflow: 'hidden',
         }}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
@@ -4451,7 +4499,21 @@ const DesignStudio = ({
           setSelectedImageElement(null);
         }}
       >
-        <div className="preview-container" style={{ position: 'relative', minHeight: '100vh' }}>
+        {/* Background layer: blur/opacity affect only this, not the content above it */}
+        <Box
+          sx={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 0,
+            backgroundColor: globalStyles.backgroundColor,
+            filter: globalStyles.backgroundBlur ? `blur(${globalStyles.backgroundBlur}px)` : 'none',
+            opacity: globalStyles.backgroundOpacity ?? 1,
+          }}
+        />
+        <div
+          className="preview-container"
+          style={{ position: 'relative', zIndex: 1, minHeight: '100vh' }}
+        >
           {textElements.map((element, index) => (
             <motion.div
               key={element.id}
@@ -5006,6 +5068,15 @@ const DesignStudio = ({
               <Divider sx={{ mb: 2, borderColor: alpha('#FFFFFF', 0.1) }} />
               <Typography variant="subtitle2" sx={{ color: alpha('#FFFFFF', 0.7), mb: 1, mt: 2 }}>
                 Image Size Presets
+                {selectedLibraryImage && (
+                  <Typography
+                    component="span"
+                    variant="caption"
+                    sx={{ color: G_START, ml: 1, fontWeight: 500 }}
+                  >
+                    (applies to "{selectedLibraryImage.name}")
+                  </Typography>
+                )}
               </Typography>
               <Grid container spacing={1} sx={{ mb: 3 }}>
                 {imageStyles.map((style) => (
@@ -5016,9 +5087,12 @@ const DesignStudio = ({
                       variant="outlined"
                       startIcon={<AspectRatio />}
                       onClick={() => {
-                        if (uploadedImages.length > 0)
-                          handleAddImageToCanvas(uploadedImages[0], style);
-                        else showSnackbar('Upload an image first', 'warning');
+                        if (uploadedImages.length === 0) {
+                          showSnackbar('Upload an image first', 'warning');
+                          return;
+                        }
+                        const imageToAdd = selectedLibraryImage || uploadedImages[0];
+                        handleAddImageToCanvas(imageToAdd, style);
                       }}
                       sx={{
                         color: 'white',
@@ -5146,7 +5220,15 @@ const DesignStudio = ({
               </Typography>
               <ImageList sx={{ mb: 2 }} cols={2} gap={8}>
                 {uploadedImages.map((image) => (
-                  <ImageListItem key={image.id}>
+                  <ImageListItem
+                    key={image.id}
+                    sx={{
+                      outline:
+                        selectedLibraryImage?.id === image.id ? `2px solid ${G_START}` : 'none',
+                      outlineOffset: '2px',
+                      borderRadius: globalStyles.borderRadius,
+                    }}
+                  >
                     <img
                       src={image.url}
                       alt={image.name}
@@ -5158,7 +5240,11 @@ const DesignStudio = ({
                         height: 90,
                         objectFit: 'cover',
                       }}
-                      onClick={() => handleAddImageToCanvas(image)}
+                      onClick={() =>
+                        setSelectedLibraryImage(
+                          selectedLibraryImage?.id === image.id ? null : image
+                        )
+                      }
                     />
                     {image.isMock && (
                       <Box sx={{ position: 'absolute', top: 4, left: 4 }}>
@@ -5813,9 +5899,7 @@ const DesignStudio = ({
                 }}
               />
             )}
-            <Tooltip
-              title={autoSaveEnabled ? 'Auto-save is on (every 10 min)' : 'Auto-save is off'}
-            >
+            <Tooltip title={autoSaveEnabled ? 'Auto-save is on (every 10 min)' : 'Auto-save is off'}>
               <FormControlLabel
                 sx={{ mr: 2, ml: 0 }}
                 control={
@@ -6257,7 +6341,10 @@ const DesignStudio = ({
                     <Button
                       variant="outlined"
                       startIcon={<ImageIcon />}
-                      onClick={() => setImageUploadDialogOpen(true)}
+                      onClick={() => {
+                        setImageUploadTarget({ componentId: selectedComponent.id, itemIndex: null });
+                        setImageUploadDialogOpen(true);
+                      }}
                       sx={{ color: 'white', borderColor: alpha('#FFFFFF', 0.2) }}
                     >
                       Select Image
@@ -6551,7 +6638,10 @@ const DesignStudio = ({
                     <Button
                       variant="outlined"
                       startIcon={<ImageIcon />}
-                      onClick={() => setImageUploadDialogOpen(true)}
+                      onClick={() => {
+                        setImageUploadTarget({ componentId: selectedComponent.id, itemIndex: null });
+                        setImageUploadDialogOpen(true);
+                      }}
                       sx={{ color: 'white', borderColor: alpha('#FFFFFF', 0.2) }}
                     >
                       Select Image
@@ -6635,7 +6725,13 @@ const DesignStudio = ({
                           size="small"
                           variant="outlined"
                           startIcon={<ImageIcon />}
-                          onClick={() => setImageUploadDialogOpen(true)}
+                          onClick={() => {
+                            setImageUploadTarget({
+                              componentId: selectedComponent.id,
+                              itemIndex: idx,
+                            });
+                            setImageUploadDialogOpen(true);
+                          }}
                           sx={{ color: 'white', borderColor: alpha('#FFFFFF', 0.2) }}
                         >
                           Add Image
@@ -6727,7 +6823,13 @@ const DesignStudio = ({
                           size="small"
                           variant="outlined"
                           startIcon={<ImageIcon />}
-                          onClick={() => setImageUploadDialogOpen(true)}
+                          onClick={() => {
+                            setImageUploadTarget({
+                              componentId: selectedComponent.id,
+                              itemIndex: idx,
+                            });
+                            setImageUploadDialogOpen(true);
+                          }}
                           sx={{ color: 'white', borderColor: alpha('#FFFFFF', 0.2) }}
                         >
                           Add Image
@@ -7403,7 +7505,10 @@ const DesignStudio = ({
       {/* Dialogs */}
       <Dialog
         open={imageUploadDialogOpen}
-        onClose={() => setImageUploadDialogOpen(false)}
+        onClose={() => {
+          setImageUploadDialogOpen(false);
+          setImageUploadTarget(null);
+        }}
         maxWidth="sm"
         fullWidth
         PaperProps={{
@@ -7443,7 +7548,16 @@ const DesignStudio = ({
                   key={image.id}
                   sx={{ cursor: 'pointer' }}
                   onClick={() => {
-                    if (selectedComponent) handleAddImageToComponent(image, selectedComponent.id);
+                    if (imageUploadTarget) {
+                      handleAddImageToComponent(
+                        image,
+                        imageUploadTarget.componentId,
+                        imageUploadTarget.itemIndex
+                      );
+                    } else if (selectedComponent) {
+                      handleAddImageToComponent(image, selectedComponent.id);
+                    }
+                    setImageUploadTarget(null);
                     setImageUploadDialogOpen(false);
                   }}
                 >
@@ -7467,7 +7581,13 @@ const DesignStudio = ({
           )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setImageUploadDialogOpen(false)} sx={{ color: 'white' }}>
+          <Button
+            onClick={() => {
+              setImageUploadDialogOpen(false);
+              setImageUploadTarget(null);
+            }}
+            sx={{ color: 'white' }}
+          >
             Cancel
           </Button>
         </DialogActions>
@@ -7765,7 +7885,7 @@ const DesignStudio = ({
               handleDeleteProject(projectId);
             }}
             onDuplicateProject={(project) => {
-              const dupeId = Date.now().toString();
+              const dupeId = generateId();
               const dupeData = {
                 ...project,
                 id: dupeId,
