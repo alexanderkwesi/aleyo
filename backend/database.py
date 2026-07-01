@@ -41,7 +41,7 @@ INET = String(45)
 # ---------------------------------------------------------------------------
 DATABASE_URL = os.getenv(
     'DATABASE_URL',
-    'sqlite:///./aleyo.db'
+    'gs://aleyo-bucket/aleyo.db'
 )
 
 # Create engine
