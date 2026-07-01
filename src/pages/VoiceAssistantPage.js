@@ -1,4 +1,4 @@
-// VoiceAssistantBoxed.js
+// VoiceAssistantBoxed.js - Complete fixed version
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Fab,
@@ -30,6 +30,12 @@ import {
   Backdrop,
   CircularProgress,
   InputAdornment,
+  List,
+  ListItem,
+  ListItemIcon,
+  ListItemText,
+  Card,
+  CardContent,
 } from '@mui/material';
 
 import {
@@ -41,7 +47,6 @@ import {
   ColorLens,
   DesignServices,
   Merge,
-  Cloud,
   Psychology,
   Add,
   ContactMail,
@@ -62,11 +67,17 @@ import {
   SmartToy,
   RecordVoiceOver,
   Send as SendIcon,
+  FolderOpen,
+  GetApp,
+  Code,
+  Storage,
+  Description,
+  Clear,
 } from '@mui/icons-material';
 import { motion, AnimatePresence } from 'framer-motion';
 
 // -------------------------------------------------------------------
-// DESIGN SYSTEM: Enhanced Color Palette & Gradients
+// DESIGN SYSTEM
 // -------------------------------------------------------------------
 const COLORS = {
   primary: {
@@ -98,12 +109,140 @@ const GRADIENT_PRIMARY = `linear-gradient(135deg, ${COLORS.primary.start} 0%, ${
 const GRADIENT_DARK = `linear-gradient(135deg, ${COLORS.primary.dark} 0%, #0A0F18 100%)`;
 const GRADIENT_ACCENT = `linear-gradient(135deg, ${COLORS.accent.purple} 0%, ${COLORS.accent.pink} 100%)`;
 
+// -------------------------------------------------------------------
+// Backend connection
+// -------------------------------------------------------------------
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://127.0.0.1:8000';
+
 // Animation variants
 const fadeInUp = {
   hidden: { opacity: 0, y: 20 },
   visible: { opacity: 1, y: 0 },
   exit: { opacity: 0, y: -20 },
 };
+
+// -------------------------------------------------------------------
+// WebSocket Manager for Real-time Communication (Moved outside component)
+// -------------------------------------------------------------------
+class WebSocketManager {
+  constructor() {
+    this.socket = null;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 5;
+    this.reconnectDelay = 1000;
+    this.listeners = new Map();
+    this.isConnecting = false;
+    this.userId = null;
+  }
+
+  connect(userId) {
+    if (this.isConnecting || this.socket?.readyState === WebSocket.OPEN) {
+      return;
+    }
+
+    this.userId = userId;
+    this.isConnecting = true;
+    const wsUrl = `${API_BASE_URL.replace('http', 'ws')}/ws/${userId}`;
+
+    try {
+      this.socket = new WebSocket(wsUrl);
+
+      this.socket.onopen = () => {
+        console.log('WebSocket connected');
+        this.isConnecting = false;
+        this.reconnectAttempts = 0;
+        this.emit('connected', { status: 'connected' });
+      };
+
+      this.socket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          this.emit('message', data);
+        } catch (error) {
+          console.error('Failed to parse WebSocket message:', error);
+        }
+      };
+
+      this.socket.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        this.emit('error', error);
+      };
+
+      this.socket.onclose = () => {
+        console.log('WebSocket disconnected');
+        this.isConnecting = false;
+        this.emit('disconnected', { status: 'disconnected' });
+        this.attemptReconnect();
+      };
+    } catch (error) {
+      console.error('Failed to connect WebSocket:', error);
+      this.isConnecting = false;
+      this.emit('error', error);
+    }
+  }
+
+  attemptReconnect() {
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      console.log('Max reconnect attempts reached');
+      this.emit('reconnect_failed', { attempts: this.reconnectAttempts });
+      return;
+    }
+
+    this.reconnectAttempts++;
+    const delay = this.reconnectDelay * Math.pow(1.5, this.reconnectAttempts - 1);
+
+    setTimeout(() => {
+      if (this.userId) {
+        console.log(`Attempting reconnect ${this.reconnectAttempts}/${this.maxReconnectAttempts}`);
+        this.connect(this.userId);
+      }
+    }, delay);
+  }
+
+  send(data) {
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify(data));
+      return true;
+    }
+    console.warn('WebSocket not connected, message not sent');
+    return false;
+  }
+
+  on(event, callback) {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, []);
+    }
+    this.listeners.get(event).push(callback);
+  }
+
+  off(event, callback) {
+    if (this.listeners.has(event)) {
+      const callbacks = this.listeners.get(event);
+      const index = callbacks.indexOf(callback);
+      if (index !== -1) {
+        callbacks.splice(index, 1);
+      }
+    }
+  }
+
+  emit(event, data) {
+    if (this.listeners.has(event)) {
+      this.listeners.get(event).forEach((callback) => callback(data));
+    }
+  }
+
+  disconnect() {
+    if (this.socket) {
+      this.socket.close();
+      this.socket = null;
+    }
+    this.isConnecting = false;
+  }
+
+  isConnected() {
+    return this.socket?.readyState === WebSocket.OPEN;
+  }
+}
 
 // -------------------------------------------------------------------
 // Audio Visualizer Component
@@ -278,10 +417,13 @@ const VoiceAssistantBoxed = ({
   currentContext = 'home',
   studioState,
   onStudioTransform,
+  userId,
+  onWebsiteGenerated,
 }) => {
   // State Management
   const [isListening, setIsListening] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [interimTranscript, setInterimTranscript] = useState('');
   const [responses, setResponses] = useState([]);
@@ -294,157 +436,268 @@ const VoiceAssistantBoxed = ({
   const [typingInput, setTypingInput] = useState('');
   const [showHelp, setShowHelp] = useState(false);
   const [micPermission, setMicPermission] = useState(null);
+  const [wsConnected, setWsConnected] = useState(false);
+  const [generatedFiles, setGeneratedFiles] = useState(null);
+  const [showFiles, setShowFiles] = useState(false);
+  const [generationProgress, setGenerationProgress] = useState(0);
+  const [generationStatus, setGenerationStatus] = useState('');
+  // Create wsManager instance with useRef to avoid re-creation
+  const wsManagerRef = useRef(null);
 
-  const inputRef = useRef(null);
   const messagesEndRef = useRef(null);
+  const recognitionRef = useRef(null);
 
-  // Scroll to bottom of conversation
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
-
+  // Initialize WebSocket Manager
   useEffect(() => {
-    scrollToBottom();
+    if (!wsManagerRef.current) {
+      wsManagerRef.current = new WebSocketManager();
+    }
+  }, []);
+
+  // Scroll to bottom
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [responses]);
 
-  // Mock voice service (replace with actual voiceService implementation)
-  const voiceService = {
-    isListening: false,
-    setCallbacks: (callbacks) => {
-      voiceService.callbacks = callbacks;
-    },
-    startListening: async (useAzure) => {
-      // Mock implementation - in production, integrate with actual speech recognition
-      voiceService.isListening = true;
-      // Simulate listening and result
-      setTimeout(() => {
-        if (voiceService.callbacks?.onResult) {
-          voiceService.callbacks.onResult('Create a modern business website', true);
-        }
-        voiceService.isListening = false;
-        if (voiceService.callbacks?.onEnd) voiceService.callbacks.onEnd();
-      }, 2000);
-      return true;
-    },
-    stopListening: () => {
-      voiceService.isListening = false;
-    },
-    callbacks: {},
+  // Initialize WebSocket
+  useEffect(() => {
+    const wsManager = wsManagerRef.current;
+    if (!wsManager || !userId) return;
+
+    wsManager.on('connected', () => {
+      setWsConnected(true);
+      showNotification('Connected to voice assistant', 'success');
+    });
+
+    wsManager.on('disconnected', () => {
+      setWsConnected(false);
+      showNotification('Disconnected from voice assistant', 'warning');
+    });
+
+    wsManager.on('message', (data) => {
+      handleWebSocketMessage(data);
+    });
+
+    wsManager.on('error', (error) => {
+      console.error('WebSocket error:', error);
+      showNotification('Connection error. Using HTTP fallback.', 'warning');
+    });
+
+    wsManager.on('reconnect_failed', () => {
+      showNotification('Unable to connect to voice service. Using HTTP fallback.', 'error');
+    });
+
+    wsManager.connect(userId);
+
+    return () => {
+      wsManager.disconnect();
+    };
+  }, [userId]);
+
+  // -----------------------------------------------------------------
+  // Website Generation via AI
+  // -----------------------------------------------------------------
+  const generateWebsiteWithAI = async (command) => {
+    setIsGenerating(true);
+    setGenerationProgress(0);
+    setGenerationStatus('Analyzing your request...');
+    setGeneratedFiles(null);
+
+    try {
+      const token = localStorage.getItem('authToken');
+
+      // Step 1: Generate website structure
+      setGenerationProgress(20);
+      setGenerationStatus('Generating website structure...');
+
+      const response = await fetch(`${API_BASE_URL}/api/ai/generate-website`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          command: command,
+          context: currentContext,
+          studio_state: studioState || null,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Failed to generate website');
+      }
+
+      const data = await response.json();
+      setGenerationProgress(60);
+      setGenerationStatus('Building website files...');
+
+      // Step 2: Generate the actual files
+      const filesResponse = await fetch(`${API_BASE_URL}/api/ai/generate-files`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          website_data: data,
+          command: command,
+        }),
+      });
+
+      if (!filesResponse.ok) {
+        const errorData = await filesResponse.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Failed to generate website files');
+      }
+
+      const filesData = await filesResponse.json();
+      setGenerationProgress(90);
+      setGenerationStatus('Finalizing...');
+
+      // Store generated files - ensure files array exists
+      const files = filesData.files || [];
+      setGeneratedFiles({
+        ...filesData,
+        files: files,
+        tech_stack: filesData.tech_stack || 'React + Tailwind CSS',
+      });
+
+      setGenerationProgress(100);
+      setGenerationStatus('✅ Website generated successfully!');
+
+      // Add response
+      const techStack = filesData.tech_stack || 'modern';
+      const fileCount = files.length;
+      addResponse(
+        'assistant',
+        `🎉 I've created a complete ${techStack} business website for you! The website includes ${fileCount} files with a professional design.`
+      );
+
+      // Show file list
+      setShowFiles(true);
+
+      // Notify parent
+      if (onWebsiteGenerated) {
+        onWebsiteGenerated(filesData);
+      }
+
+      showNotification('✅ Website generated successfully! Check the files below.', 'success');
+    } catch (error) {
+      console.error('Website generation error:', error);
+      setGenerationStatus(`❌ Error: ${error.message}`);
+      showNotification(`Failed to generate website: ${error.message}`, 'error');
+      addResponse(
+        'assistant',
+        `❌ Sorry, I encountered an error: ${error.message}. Please try again.`
+      );
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
-  // Enhanced suggestions
-  const suggestionsList = {
-    home: [
-      {
-        text: 'Create a modern business website',
-        icon: <DesignServices />,
-        action: { type: 'createTemplate', template: 'business' },
-        description: 'Generate a complete business website',
-      },
-      {
-        text: 'Design a creative portfolio',
-        icon: <PhotoLibrary />,
-        action: { type: 'createTemplate', template: 'portfolio' },
-        description: 'Showcase your work beautifully',
-      },
-      {
-        text: 'Build an e-commerce store',
-        icon: <ShoppingCart />,
-        action: { type: 'createTemplate', template: 'ecommerce' },
-        description: 'Start selling online',
-      },
-      {
-        text: 'Make it colorful',
-        icon: <ColorLens />,
-        action: { type: 'changeTheme', theme: 'vibrant' },
-        description: 'Add vibrant colors',
-      },
-      {
-        text: 'Apply dark mode',
-        icon: <Palette />,
-        action: { type: 'changeTheme', theme: 'dark' },
-        description: 'Switch to elegant dark theme',
-      },
-      {
-        text: 'Optimize for mobile',
-        icon: <Devices />,
-        action: { type: 'makeResponsive' },
-        description: 'Make your design fully responsive',
-      },
-    ],
-    studio: [
-      {
-        text: 'Add animated hero section',
-        icon: <DesignServices />,
-        action: { type: 'addComponent', component: 'hero', animated: true },
-        description: 'Add an animated hero section',
-      },
-      {
-        text: 'Create 3-column features grid',
-        icon: <GridOn />,
-        action: { type: 'addComponent', component: 'features', columns: 3 },
-        description: 'Showcase your features',
-      },
-      {
-        text: 'Add contact form with map',
-        icon: <ContactMail />,
-        action: { type: 'addComponent', component: 'contact', withMap: true },
-        description: 'Interactive contact section',
-      },
-      {
-        text: 'Create pricing tables',
-        icon: <ShoppingCart />,
-        action: { type: 'addComponent', component: 'pricing', plans: 3 },
-        description: 'Show your pricing plans',
-      },
-      {
-        text: 'Add image gallery',
-        icon: <PhotoLibrary />,
-        action: { type: 'addComponent', component: 'gallery', layout: 'masonry' },
-        description: 'Beautiful masonry gallery',
-      },
-      {
-        text: 'Add animations everywhere',
-        icon: <AutoAwesome />,
-        action: { type: 'enableAnimations', value: true },
-        description: 'Animate all sections',
-      },
-      {
-        text: 'Merge two designs',
-        icon: <Merge />,
-        action: { type: 'mergeDesigns' },
-        description: 'Combine current design with another template',
-      },
-    ],
-    gallery: [
-      {
-        text: 'Show modern designs',
-        icon: <DesignServices />,
-        action: { type: 'filterDesigns', category: 'modern' },
-        description: 'Browse modern templates',
-      },
-      {
-        text: 'Show minimalist designs',
-        icon: <DesignServices />,
-        action: { type: 'filterDesigns', category: 'minimalist' },
-        description: 'Clean and simple designs',
-      },
-    ],
-    integrations: [
-      {
-        text: 'Add Stripe payments',
-        icon: <Settings />,
-        action: { type: 'addIntegration', provider: 'Stripe' },
-        description: 'Accept credit card payments',
-      },
-      {
-        text: 'Add Mailchimp newsletter',
-        icon: <Settings />,
-        action: { type: 'addIntegration', provider: 'Mailchimp' },
-        description: 'Email marketing integration',
-      },
-    ],
+  // Handle WebSocket messages
+  const handleWebSocketMessage = (data) => {
+    switch (data.action) {
+      case 'update_style':
+        if (onStudioTransform) {
+          onStudioTransform({ themeChange: 'custom', style: data.property, value: data.value });
+        }
+        addResponse('assistant', `✅ Updated ${data.property} to ${data.value}`);
+        break;
+
+      case 'add_component':
+        if (onStudioTransform) {
+          onStudioTransform({ addComponent: data.type });
+        }
+        addResponse('assistant', `✅ Added ${data.type} component`);
+        break;
+
+      case 'change_layout':
+        if (onStudioTransform) {
+          onStudioTransform({ layout: data.layout_type });
+        }
+        addResponse('assistant', `✅ Changed layout to ${data.layout_type}`);
+        break;
+
+      case 'apply_template':
+        if (onCommand) {
+          onCommand({ type: 'createTemplate', template: data.template?.id || 'modern' });
+        }
+        addResponse('assistant', `✅ Applied template: ${data.template?.id || 'modern'}`);
+        break;
+
+      case 'merge_complete':
+        addResponse('assistant', '✅ Designs merged successfully!');
+        break;
+
+      default:
+        if (data.response) {
+          addResponse('assistant', data.response);
+        }
+    }
   };
+
+  // Speech Recognition Setup
+  useEffect(() => {
+    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+      showNotification('Speech recognition not supported in this browser', 'error');
+      setIsTypingMode(true);
+      return;
+    }
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    recognitionRef.current = new SpeechRecognition();
+    recognitionRef.current.continuous = true;
+    recognitionRef.current.interimResults = true;
+    recognitionRef.current.lang = 'en-US';
+
+    recognitionRef.current.onresult = (event) => {
+      let interim = '';
+      let final = '';
+
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          final += transcript;
+        } else {
+          interim += transcript;
+        }
+      }
+
+      if (final) {
+        setTranscript(final);
+        processVoiceCommand(final);
+        setIsListening(false);
+        recognitionRef.current?.stop();
+      } else if (interim) {
+        setInterimTranscript(interim);
+      }
+    };
+
+    recognitionRef.current.onerror = (event) => {
+      console.error('Speech recognition error:', event.error);
+      setIsListening(false);
+
+      if (event.error === 'not-allowed') {
+        showNotification('Microphone access denied. Please enable it or use typing mode.', 'error');
+        setIsTypingMode(true);
+      } else if (event.error === 'no-speech') {
+        showNotification('No speech detected. Please try again.', 'warning');
+      } else {
+        showNotification(`Speech error: ${event.error}`, 'error');
+      }
+    };
+
+    recognitionRef.current.onend = () => {
+      setIsListening(false);
+    };
+
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+    };
+  }, []);
 
   // Check microphone permission
   useEffect(() => {
@@ -460,84 +713,6 @@ const VoiceAssistantBoxed = ({
     checkMicPermission();
   }, []);
 
-  useEffect(() => {
-    voiceService.setCallbacks({
-      onResult: (text, isFinal) => {
-        if (isFinal) {
-          setTranscript(text);
-          processVoiceCommand(text);
-          setIsListening(false);
-          setIsProcessing(false);
-        } else {
-          setInterimTranscript(text);
-        }
-      },
-      onError: (error) => {
-        console.error('Voice recognition error:', error);
-        setIsListening(false);
-        setIsProcessing(false);
-        showNotification(`Error: ${error}`, 'error');
-        addResponse(
-          'assistant',
-          `Sorry, I encountered an error: ${error}. Please try again or use typing mode.`
-        );
-      },
-      onEnd: () => {
-        setIsListening(false);
-        setIsProcessing(false);
-      },
-    });
-
-    updateSuggestions();
-    generateAISuggestions();
-
-    return () => {
-      if (voiceService.isListening) {
-        voiceService.stopListening();
-      }
-    };
-  }, [currentContext, studioState]);
-
-  const generateAISuggestions = () => {
-    const suggestions = [];
-    if (studioState?.components?.length < 2) {
-      suggestions.push({
-        text: 'Add more sections to your page',
-        icon: <Add />,
-        action: { type: 'addComponent', component: 'features' },
-        description: 'Enhance your page',
-        isAI: true,
-      });
-    }
-    if (studioState?.globalStyles?.primaryColor === COLORS.primary.start) {
-      suggestions.push({
-        text: 'Try a different color scheme',
-        icon: <ColorLens />,
-        action: { type: 'changeColor', value: 'purple' },
-        description: 'Switch to purple theme',
-        isAI: true,
-      });
-    }
-    if (
-      studioState?.components?.some((c) => c.type === 'hero') &&
-      !studioState?.components?.some((c) => c.type === 'cta')
-    ) {
-      suggestions.push({
-        text: 'Add a call-to-action button',
-        icon: <DesignServices />,
-        action: { type: 'addCTA' },
-        description: 'Improve conversions',
-        isAI: true,
-      });
-    }
-    setAiSuggestions(suggestions.slice(0, 3));
-  };
-
-  const updateSuggestions = () => {
-    const contextSuggestions = suggestionsList[currentContext] || suggestionsList.home;
-    setSuggestions(contextSuggestions);
-  };
-
   const showNotification = (message, severity = 'info') => {
     setSnackbar({ open: true, message, severity });
     setTimeout(() => setSnackbar((prev) => ({ ...prev, open: false })), 4000);
@@ -550,19 +725,210 @@ const VoiceAssistantBoxed = ({
     ]);
   };
 
+  // -----------------------------------------------------------------
+  // Website Generation via AI
+  // -----------------------------------------------------------------
+  const generateWebsiteWithAI___ = async (command) => {
+    setIsGenerating(true);
+    setGenerationProgress(0);
+    setGenerationStatus('Analyzing your request...');
+    setGeneratedFiles(null);
+
+    try {
+      const token = localStorage.getItem('authToken');
+
+      // Step 1: Generate website structure
+      setGenerationProgress(20);
+      setGenerationStatus('Generating website structure...');
+
+      const response = await fetch(`${API_BASE_URL}/api/ai/generate-website`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          command: command,
+          context: currentContext,
+          studio_state: studioState || null,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Failed to generate website');
+      }
+
+      const data = await response.json();
+      setGenerationProgress(60);
+      setGenerationStatus('Building website files...');
+
+      // Step 2: Generate the actual files
+      const filesResponse = await fetch(`${API_BASE_URL}/api/ai/generate-files`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          website_data: data,
+          command: command,
+        }),
+      });
+
+      if (!filesResponse.ok) {
+        throw new Error('Failed to generate website files');
+      }
+
+      const filesData = await filesResponse.json();
+      setGenerationProgress(90);
+      setGenerationStatus('Finalizing...');
+
+      // Store generated files
+      setGeneratedFiles(filesData);
+      setGenerationProgress(100);
+      setGenerationStatus('✅ Website generated successfully!');
+
+      // Add response
+      const techStack = filesData.tech_stack || 'modern';
+      const fileCount = filesData.files?.length || 0;
+      addResponse(
+        'assistant',
+        `🎉 I've created a complete ${techStack} business website for you! The website includes ${fileCount} files with a professional design.`
+      );
+
+      // Show file list
+      setShowFiles(true);
+
+      // Notify parent
+      if (onWebsiteGenerated) {
+        onWebsiteGenerated(filesData);
+      }
+
+      showNotification('✅ Website generated successfully! Check the files below.', 'success');
+    } catch (error) {
+      console.error('Website generation error:', error);
+      setGenerationStatus(`❌ Error: ${error.message}`);
+      showNotification(`Failed to generate website: ${error.message}`, 'error');
+      addResponse(
+        'assistant',
+        `❌ Sorry, I encountered an error: ${error.message}. Please try again.`
+      );
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  // -----------------------------------------------------------------
+  // Download generated files
+  // -----------------------------------------------------------------
+  const downloadFiles = () => {
+    if (!generatedFiles || !generatedFiles.files) return;
+
+    // For each file, create a download
+    generatedFiles.files.forEach((file) => {
+      const content = file.content || '';
+      const blob = new Blob([content], { type: file.mime_type || 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file.path || file.name || 'file.txt';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    });
+
+    showNotification(`${generatedFiles.files.length} files downloaded successfully!`, 'success');
+  };
+
+  // -----------------------------------------------------------------
+  // Process voice command with website generation
+  // -----------------------------------------------------------------
   const processVoiceCommand = async (command) => {
+    addResponse('user', command);
+    setCommandHistory((prev) => [{ command, timestamp: new Date() }, ...prev].slice(0, 20));
+    setIsProcessing(true);
+
+    // Check if it's a website generation command
+    const lowerCommand = command.toLowerCase();
+    if (
+      (lowerCommand.includes('create') ||
+        lowerCommand.includes('build') ||
+        lowerCommand.includes('make') ||
+        lowerCommand.includes('generate')) &&
+      (lowerCommand.includes('website') ||
+        lowerCommand.includes('site') ||
+        lowerCommand.includes('business') ||
+        lowerCommand.includes('store'))
+    ) {
+      await generateWebsiteWithAI(command);
+      setIsProcessing(false);
+      return;
+    }
+
+    // Regular command processing
+    try {
+      const token = localStorage.getItem('authToken');
+
+      // Try Anthropic API
+      const response = await fetch(`${API_BASE_URL}/api/ai/voice-command`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          command: command,
+          context: currentContext,
+          studio_state: studioState || null,
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        addResponse('assistant', data.reply || 'Command processed.');
+
+        if (data.action && onCommand) {
+          onCommand(data.action);
+        }
+        if (data.transform && onStudioTransform) {
+          onStudioTransform(data.transform);
+        }
+      } else {
+        // Fallback to local processing
+        const localResult = processCommandLocally(command);
+        if (localResult.reply) {
+          addResponse('assistant', localResult.reply);
+        }
+        if (localResult.actionToTrigger && onCommand) {
+          onCommand(localResult.actionToTrigger);
+        }
+        if (localResult.transformData && onStudioTransform) {
+          onStudioTransform(localResult.transformData);
+        }
+      }
+    } catch (error) {
+      console.error('Command processing error:', error);
+      // Fallback to local
+      const localResult = processCommandLocally(command);
+      if (localResult.reply) {
+        addResponse('assistant', localResult.reply);
+      }
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // -----------------------------------------------------------------
+  // Local command processing (fallback)
+  // -----------------------------------------------------------------
+  const processCommandLocally = (command) => {
     const lower = command.toLowerCase().trim();
     let reply = '';
     let actionToTrigger = null;
     let transformData = null;
 
-    addResponse('user', command);
-    setCommandHistory((prev) => [{ command, timestamp: new Date() }, ...prev].slice(0, 20));
-
-    setIsProcessing(true);
-    await new Promise((resolve) => setTimeout(resolve, 600));
-
-    // Command processing logic
     if (lower.match(/create|build|make|generate|new/)) {
       if (lower.match(/business|company|corporate/)) {
         reply =
@@ -570,6 +936,13 @@ const VoiceAssistantBoxed = ({
         actionToTrigger = { type: 'createTemplate', template: 'business' };
         transformData = { fullTransform: true, template: 'business' };
         showNotification('Building your business website...', 'success');
+        // Trigger website generation
+        generateWebsiteWithAI(command);
+        return {
+          reply: 'Generating your business website...',
+          actionToTrigger: null,
+          transformData: null,
+        };
       } else if (lower.match(/portfolio|creative|artist/)) {
         reply = '🎨 Designing a stunning portfolio to showcase your work beautifully.';
         actionToTrigger = { type: 'createTemplate', template: 'portfolio' };
@@ -657,22 +1030,12 @@ const VoiceAssistantBoxed = ({
       actionToTrigger = { type: 'enhanceDesign' };
       transformData = { enhance: true };
       showNotification('Enhancing design...', 'success');
-    } else if (lower.match(/undo/)) {
-      reply = '↩️ Undoing your last action.';
-      actionToTrigger = { type: 'undo' };
-      showNotification('Undoing last action...', 'info');
-    } else if (lower.match(/preview/)) {
-      reply = '👁️ Opening preview mode.';
-      actionToTrigger = { type: 'preview' };
-      showNotification('Opening preview...', 'info');
-    } else if (lower.match(/publish/)) {
-      reply = '🚀 Preparing to publish your website.';
-      actionToTrigger = { type: 'publish' };
-      showNotification('Ready to publish!', 'info');
     } else if (lower.match(/help/)) {
       reply = `🤖 I'm your AI design assistant! Here's what I can do:
 
-🎨 CREATE: "Create a business website", "Build a portfolio", "Make an e-commerce store"
+🌐 CREATE FULL WEBSITE: "Create a modern business website", "Build an e-commerce store"
+
+🎨 CREATE: "Create a business website", "Build a portfolio"
 
 ➕ ADD: "Add hero section", "Add features grid", "Add image gallery", "Add contact form"
 
@@ -683,45 +1046,36 @@ const VoiceAssistantBoxed = ({
 Try any of these commands!`;
       showNotification('Check conversation for available commands', 'info');
     } else if (lower.match(/hello|hi/)) {
-      reply = `👋 Hello! I'm Nova, your AI design assistant. I can help you create beautiful websites. Try saying "Create a business website" to get started!`;
+      reply = `👋 Hello! I'm Nova, your AI design assistant. I can help you create beautiful websites. Try saying "Create a modern business website" to get started!`;
       showNotification(reply, 'info');
     } else {
-      reply = `🤖 I heard: "${command}". Try saying "Create a portfolio", "Add features section", or "Change theme to dark".`;
+      reply = `🤖 I heard: "${command}". Try saying "Create a modern business website", "Add features section", or "Change theme to dark".`;
       showNotification(reply, 'warning');
-      setTimeout(() => {
-        addResponse(
-          'assistant',
-          '💡 Tip: Try saying "Improve design" to get AI-powered enhancements for your current page!'
-        );
-      }, 1500);
     }
 
-    setTimeout(() => {
-      if (reply) addResponse('assistant', reply);
-    }, 300);
-
-    setIsProcessing(false);
-
-    if (actionToTrigger && onCommand) {
-      onCommand(actionToTrigger);
-    }
-
-    if (transformData && onStudioTransform) {
-      onStudioTransform(transformData);
-    }
+    return { reply, actionToTrigger, transformData };
   };
 
-  const startListening = async () => {
+  // -----------------------------------------------------------------
+  // Start/Stop Listening
+  // -----------------------------------------------------------------
+  const startListening = () => {
     try {
       if (micPermission === 'denied') {
         showNotification('Microphone access denied. Please enable it or use typing mode.', 'error');
         setIsTypingMode(true);
         return;
       }
+
+      if (!recognitionRef.current) {
+        showNotification('Speech recognition not available', 'error');
+        return;
+      }
+
       setIsListening(true);
       setTranscript('');
       setInterimTranscript('');
-      await voiceService.startListening(voiceEngine === 'azure');
+      recognitionRef.current.start();
       showNotification('🎤 Listening... Speak your command clearly', 'info');
     } catch (error) {
       showNotification(error.message || 'Failed to access microphone.', 'error');
@@ -731,7 +1085,11 @@ Try any of these commands!`;
   };
 
   const stopListening = () => {
-    voiceService.stopListening();
+    try {
+      recognitionRef.current?.stop();
+    } catch (error) {
+      console.warn('Error stopping recognition:', error);
+    }
     setIsListening(false);
   };
 
@@ -752,28 +1110,117 @@ Try any of these commands!`;
 
   const handleSuggestionClick = (suggestion) => {
     processVoiceCommand(suggestion.text);
-    if (suggestion.action && onCommand) {
-      onCommand(suggestion.action);
-    }
   };
 
   const clearConversation = () => {
     setResponses([]);
+    setGeneratedFiles(null);
+    setShowFiles(false);
     showNotification('Conversation cleared', 'info');
   };
 
   const handleEngineChange = (event, newEngine) => {
     if (newEngine) {
       setVoiceEngine(newEngine);
-      showNotification(`Switched to ${newEngine.toUpperCase()} voice engine`, 'info');
+      const label = newEngine === 'anthropic' ? 'Anthropic AI' : 'Web';
+      showNotification(`Switched to ${label} command engine`, 'info');
     }
   };
 
+  // Generate AI suggestions
+  const generateAISuggestions = () => {
+    const suggestions = [];
+    if (studioState?.components?.length < 2) {
+      suggestions.push({
+        text: 'Add more sections to your page',
+        icon: <Add />,
+        action: { type: 'addComponent', component: 'features' },
+        description: 'Enhance your page',
+        isAI: true,
+      });
+    }
+    if (studioState?.globalStyles?.primaryColor === COLORS.primary.start) {
+      suggestions.push({
+        text: 'Try a different color scheme',
+        icon: <ColorLens />,
+        action: { type: 'changeColor', value: 'purple' },
+        description: 'Switch to purple theme',
+        isAI: true,
+      });
+    }
+    if (
+      studioState?.components?.some((c) => c.type === 'hero') &&
+      !studioState?.components?.some((c) => c.type === 'cta')
+    ) {
+      suggestions.push({
+        text: 'Add a call-to-action button',
+        icon: <DesignServices />,
+        action: { type: 'addCTA' },
+        description: 'Improve conversions',
+        isAI: true,
+      });
+    }
+    setAiSuggestions(suggestions.slice(0, 3));
+  };
+
+  const updateSuggestions = () => {
+    const suggestionsList = {
+      home: [
+        {
+          text: 'Create a modern business website',
+          icon: <DesignServices />,
+          action: { type: 'createTemplate', template: 'business' },
+          description: 'Generate a complete business website',
+        },
+        {
+          text: 'Design a creative portfolio',
+          icon: <PhotoLibrary />,
+          action: { type: 'createTemplate', template: 'portfolio' },
+          description: 'Showcase your work beautifully',
+        },
+        {
+          text: 'Build an e-commerce store',
+          icon: <ShoppingCart />,
+          action: { type: 'createTemplate', template: 'ecommerce' },
+          description: 'Start selling online',
+        },
+        {
+          text: 'Make it colorful',
+          icon: <ColorLens />,
+          action: { type: 'changeTheme', theme: 'vibrant' },
+          description: 'Add vibrant colors',
+        },
+        {
+          text: 'Apply dark mode',
+          icon: <Palette />,
+          action: { type: 'changeTheme', theme: 'dark' },
+          description: 'Switch to elegant dark theme',
+        },
+        {
+          text: 'Optimize for mobile',
+          icon: <Devices />,
+          action: { type: 'makeResponsive' },
+          description: 'Make your design fully responsive',
+        },
+      ],
+    };
+    const contextSuggestions = suggestionsList[currentContext] || suggestionsList.home;
+    setSuggestions(contextSuggestions);
+  };
+
+  useEffect(() => {
+    updateSuggestions();
+    generateAISuggestions();
+  }, [currentContext, studioState]);
+
+  // -----------------------------------------------------------------
+  // Render
+  // -----------------------------------------------------------------
   return (
     <Box
       sx={{
         width: '100%',
-        marginTop:'44px',
+        marginTop: '44px',
         maxWidth: 900,
         mx: 'auto',
         p: 3,
@@ -788,7 +1235,7 @@ Try any of these commands!`;
         },
       }}
     >
-      {/* Header Section */}
+      {/* Header */}
       <Box
         sx={{
           display: 'flex',
@@ -822,7 +1269,7 @@ Try any of these commands!`;
               </span>
             </Typography>
             <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)' }}>
-              Voice Design Assistant
+              Voice Design Assistant {wsConnected && '🟢'}
             </Typography>
           </Box>
           <AudioVisualizer isListening={isListening} isProcessing={isProcessing} />
@@ -879,8 +1326,8 @@ Try any of these commands!`;
           <ToggleButton value="web">
             <Mic sx={{ fontSize: 14, mr: 0.5 }} /> Web
           </ToggleButton>
-          <ToggleButton value="azure">
-            <Cloud sx={{ fontSize: 14, mr: 0.5 }} /> Azure
+          <ToggleButton value="anthropic">
+            <SmartToy sx={{ fontSize: 14, mr: 0.5 }} /> Anthropic
           </ToggleButton>
         </ToggleButtonGroup>
         <Button
@@ -924,13 +1371,12 @@ Try any of these commands!`;
               </Typography>
               <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
                 {[
-                  'Create business site',
+                  'Create a modern business website',
+                  'Build an e-commerce store',
+                  'Create a portfolio',
                   'Add hero section',
                   'Dark theme',
                   'Make responsive',
-                  'Add animations',
-                  'Improve design',
-                  'Preview',
                 ].map((cmd) => (
                   <Chip
                     key={cmd}
@@ -950,116 +1396,196 @@ Try any of these commands!`;
         )}
       </AnimatePresence>
 
-      {/* AI Smart Suggestions */}
-      {aiSuggestions.length > 0 && (
+      {/* Generation Progress */}
+      {isGenerating && (
         <Box sx={{ mb: 3 }}>
-          <Typography
-            variant="subtitle2"
-            sx={{ mb: 1, display: 'flex', alignItems: 'center', gap: 1 }}
+          <Paper
+            sx={{
+              p: 2,
+              background: 'rgba(79, 110, 247, 0.1)',
+              borderRadius: '16px',
+              border: `1px solid ${COLORS.primary.border}`,
+            }}
           >
-            <AutoAwesome sx={{ fontSize: 14, color: COLORS.accent.purple }} /> AI Smart Suggestions
-          </Typography>
-          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-            {aiSuggestions.map((suggestion, index) => (
-              <CommandChip
-                key={index}
-                suggestion={suggestion}
-                onClick={handleSuggestionClick}
-                isAI={suggestion.isAI}
-              />
-            ))}
-          </Box>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+              <CircularProgress size={24} sx={{ color: COLORS.primary.start }} />
+              <Box sx={{ flex: 1 }}>
+                <Typography variant="body2">{generationStatus}</Typography>
+                <LinearProgress
+                  variant="determinate"
+                  value={generationProgress}
+                  sx={{
+                    height: 6,
+                    borderRadius: 3,
+                    mt: 1,
+                    '& .MuiLinearProgress-bar': {
+                      background: GRADIENT_PRIMARY,
+                    },
+                  }}
+                />
+              </Box>
+            </Box>
+          </Paper>
         </Box>
       )}
 
-      {/* Typing Mode Input */}
+      {/* Generated Files Display */}
+      {generatedFiles && showFiles && generatedFiles.files && generatedFiles.files.length > 0 && (
+        <Box sx={{ mb: 3 }}>
+          <Card
+            sx={{
+              background: 'rgba(255,255,255,0.03)',
+              border: `1px solid ${COLORS.state.success}44`,
+              borderRadius: '16px',
+            }}
+          >
+            <CardContent>
+              <Box
+                sx={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  mb: 2,
+                }}
+              >
+                <Typography variant="h6" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <FolderOpen sx={{ color: COLORS.state.success }} />
+                  Generated Files
+                  <Chip
+                    label={`${generatedFiles.files.length} files`}
+                    size="small"
+                    sx={{ ml: 1, background: COLORS.state.success }}
+                  />
+                </Typography>
+                <Box>
+                  <Button
+                    size="small"
+                    startIcon={<GetApp />}
+                    onClick={downloadFiles}
+                    variant="contained"
+                    sx={{
+                      background: GRADIENT_PRIMARY,
+                      borderRadius: '20px',
+                      textTransform: 'none',
+                    }}
+                  >
+                    Download All
+                  </Button>
+                  <IconButton size="small" onClick={() => setShowFiles(false)} sx={{ ml: 1 }}>
+                    <Clear />
+                  </IconButton>
+                </Box>
+              </Box>
+
+              <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.6)', mb: 2 }}>
+                Tech Stack: {generatedFiles.tech_stack || 'Modern'}
+              </Typography>
+
+              <List sx={{ maxHeight: 300, overflow: 'auto' }}>
+                {generatedFiles.files.map((file, index) => (
+                  <ListItem
+                    key={index}
+                    button
+                    onClick={() => {
+                      showNotification(
+                        `📄 ${file.path}: ${file.content?.length || 0} characters`,
+                        'info'
+                      );
+                    }}
+                    sx={{
+                      borderBottom: `1px solid ${COLORS.primary.border}`,
+                      '&:hover': { background: 'rgba(255,255,255,0.05)' },
+                    }}
+                  >
+                    <ListItemIcon>
+                      {file.path?.endsWith('.html') ? (
+                        <Code sx={{ color: COLORS.primary.start }} />
+                      ) : file.path?.endsWith('.css') ? (
+                        <Palette sx={{ color: COLORS.accent.purple }} />
+                      ) : file.path?.endsWith('.js') || file.path?.endsWith('.ts') ? (
+                        <DesignServices sx={{ color: COLORS.accent.yellow }} />
+                      ) : file.path?.endsWith('.json') ? (
+                        <Storage sx={{ color: COLORS.accent.cyan }} />
+                      ) : (
+                        <Description />
+                      )}
+                    </ListItemIcon>
+                    <ListItemText
+                      primary={file.path || file.name || `file-${index}`}
+                      secondary={`${file.content?.length || 0} characters`}
+                      primaryTypographyProps={{ sx: { color: 'white', fontSize: '0.9rem' } }}
+                      secondaryTypographyProps={{
+                        sx: { color: 'rgba(255,255,255,0.4)', fontSize: '0.75rem' },
+                      }}
+                    />
+                  </ListItem>
+                ))}
+              </List>
+            </CardContent>
+          </Card>
+        </Box>
+      )}
+
+      {/* Typing Mode */}
       {isTypingMode && (
         <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
           <Paper
             sx={{
-              p: 1,
+              p: 1.5,
               mb: 3,
               background: 'rgba(255,255,255,0.03)',
               borderRadius: '16px',
-              display: 'flex',
-              gap: 1,
-              alignItems: 'center',
+              border: `1px solid ${COLORS.primary.border}`,
             }}
           >
-            {isTypingMode && (
-              <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
-                <Paper
-                  sx={{
-                    p: 1.5,
-                    mb: 3,
-                    background: 'rgba(255,255,255,0.03)',
-                    borderRadius: '16px',
-                    border: `1px solid ${COLORS.primary.border}`,
-                  }}
-                >
-                  <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
-                    <Close sx={{ color: COLORS.primary.start, fontSize: 20, mt: 1 }} />
-                    <div
-                      contentEditable
-                      role="textbox"
-                      onKeyPress={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey) {
-                          e.preventDefault();
-                          handleTypingSubmit();
-                        }
-                      }}
-                      onInput={(e) => setTypingInput(e.currentTarget.textContent || '')}
-                      style={{
-                        flex: 1,
-                        background: 'transparent',
-                        border: 'none',
-                        color: 'white',
-                        padding: '10px 0',
-                        outline: 'none',
-                        fontSize: '0.9rem',
-                        minHeight: '40px',
-                        maxHeight: '120px',
-                        overflowY: 'auto',
-                        whiteSpace: 'pre-wrap',
-                        wordWrap: 'break-word',
-                      }}
-                      data-placeholder="Type your command here..."
-                      suppressContentEditableWarning
-                    />
-                    <Button
-                      variant="contained"
-                      onClick={handleTypingSubmit}
-                      sx={{
-                        background: GRADIENT_PRIMARY,
-                        borderRadius: '20px',
-                        textTransform: 'none',
-                        minWidth: 'auto',
-                        px: 2,
-                      }}
-                    >
-                      <SendIcon sx={{ fontSize: 18 }} />
-                    </Button>
-                  </Box>
-                </Paper>
-              </motion.div>
-            )}
-            <Button
-              variant="contained"
-              onClick={handleTypingSubmit}
-              sx={{
-                background: GRADIENT_PRIMARY,
-                borderRadius: '12px',
-                textTransform: 'none',
-                minWidth: 'auto',
-              }}
-            >
-              <SendIcon />
-            </Button>
+            <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
+              <Close sx={{ color: COLORS.primary.start, fontSize: 20, mt: 1 }} />
+              <div
+                contentEditable
+                role="textbox"
+                onKeyPress={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleTypingSubmit();
+                  }
+                }}
+                onInput={(e) => setTypingInput(e.currentTarget.textContent || '')}
+                style={{
+                  flex: 1,
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'white',
+                  padding: '10px 0',
+                  outline: 'none',
+                  fontSize: '0.9rem',
+                  minHeight: '40px',
+                  maxHeight: '120px',
+                  overflowY: 'auto',
+                  whiteSpace: 'pre-wrap',
+                  wordWrap: 'break-word',
+                }}
+                data-placeholder="Type your command here..."
+                suppressContentEditableWarning
+              />
+              <Button
+                variant="contained"
+                onClick={handleTypingSubmit}
+                sx={{
+                  background: GRADIENT_PRIMARY,
+                  borderRadius: '20px',
+                  textTransform: 'none',
+                  minWidth: 'auto',
+                  px: 2,
+                }}
+              >
+                <SendIcon sx={{ fontSize: 18 }} />
+              </Button>
+            </Box>
           </Paper>
         </motion.div>
       )}
 
-      {/* Voice Listening Button */}
+      {/* Voice Button */}
       {!isTypingMode && (
         <Box sx={{ textAlign: 'center', mb: 3 }}>
           <motion.div
@@ -1068,6 +1594,7 @@ Try any of these commands!`;
           >
             <Fab
               onClick={toggleListening}
+              disabled={isGenerating}
               sx={{
                 width: 88,
                 height: 88,
@@ -1076,13 +1603,20 @@ Try any of these commands!`;
                 transition: 'all 0.3s ease',
                 animation: isListening ? 'pulse-ring 1.5s infinite' : 'none',
                 boxShadow: isListening ? `0 0 20px ${COLORS.state.listening}` : 'none',
+                '&.Mui-disabled': {
+                  opacity: 0.5,
+                },
               }}
             >
               {isListening ? <MicOff sx={{ fontSize: 40 }} /> : <Mic sx={{ fontSize: 40 }} />}
             </Fab>
           </motion.div>
           <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.5)', mt: 1.5 }}>
-            {isListening ? 'Listening... Speak now' : 'Click to start speaking'}
+            {isListening
+              ? 'Listening... Speak now'
+              : isGenerating
+                ? 'Generating website...'
+                : 'Click to start speaking'}
           </Typography>
           {micPermission === 'denied' && (
             <Typography
@@ -1092,10 +1626,18 @@ Try any of these commands!`;
               Microphone access denied. Use typing mode instead.
             </Typography>
           )}
+          {!wsConnected && (
+            <Typography
+              variant="caption"
+              sx={{ color: COLORS.state.warning, mt: 0.5, display: 'block' }}
+            >
+              Real-time connection unavailable. Using HTTP fallback.
+            </Typography>
+          )}
         </Box>
       )}
 
-      {/* Current Transcript Display */}
+      {/* Transcript Display */}
       {(transcript || (interimTranscript && isListening)) && (
         <motion.div variants={fadeInUp} initial="hidden" animate="visible">
           <Paper
@@ -1152,34 +1694,53 @@ Try any of these commands!`;
           <Psychology sx={{ fontSize: 48, mb: 1, opacity: 0.5 }} />
           <Typography variant="body2">Your conversation will appear here</Typography>
           <Typography variant="caption">
-            Try saying "Create a website" or click a suggestion below
+            Try saying "Create a modern business website" to get started!
           </Typography>
         </Box>
       )}
 
-      {/* Suggestions Section */}
-      {suggestions.length > 0 && (
-        <Box sx={{ pt: 2, borderTop: `1px solid ${COLORS.primary.border}` }}>
-          <Typography
-            variant="subtitle2"
-            sx={{ mb: 1.5, display: 'flex', alignItems: 'center', gap: 1 }}
-          >
-            <Lightbulb sx={{ fontSize: 14, color: COLORS.state.warning }} /> Suggested Commands
-          </Typography>
-          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-            {suggestions.slice(0, 8).map((suggestion, index) => (
-              <CommandChip
-                key={index}
-                suggestion={suggestion}
-                onClick={handleSuggestionClick}
-                isAI={false}
-              />
-            ))}
-          </Box>
+      {/* Suggestions */}
+      <Box sx={{ pt: 2, borderTop: `1px solid ${COLORS.primary.border}` }}>
+        <Typography
+          variant="subtitle2"
+          sx={{ mb: 1.5, display: 'flex', alignItems: 'center', gap: 1 }}
+        >
+          <Lightbulb sx={{ fontSize: 14, color: COLORS.state.warning }} /> Quick Actions
+        </Typography>
+        <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+          {[
+            { text: '🌐 Create modern business website' },
+            { text: '🛒 Build e-commerce store' },
+            { text: '🎨 Create portfolio' },
+            { text: '➕ Add hero section' },
+            { text: '🌙 Dark theme' },
+            { text: '📱 Make responsive' },
+          ].map((suggestion, index) => (
+            <Chip
+              key={index}
+              label={suggestion.text}
+              onClick={() => processVoiceCommand(suggestion.text)}
+              variant="outlined"
+              sx={{
+                borderColor: COLORS.primary.border,
+                backgroundColor: 'rgba(255,255,255,0.03)',
+                color: 'white',
+                '&:hover': {
+                  borderColor: COLORS.primary.start,
+                  backgroundColor: 'rgba(79, 110, 247, 0.1)',
+                  transform: 'translateY(-2px)',
+                  transition: 'all 0.2s ease',
+                },
+                transition: 'all 0.2s ease',
+                borderRadius: '12px',
+                height: 36,
+              }}
+            />
+          ))}
         </Box>
-      )}
+      </Box>
 
-      {/* Footer Stats */}
+      {/* Footer */}
       <Box
         sx={{
           mt: 2,
@@ -1192,35 +1753,14 @@ Try any of these commands!`;
       >
         <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.4)' }}>
           {responses.length} messages • {commandHistory.length} commands
+          {generatedFiles && ` • 📁 ${generatedFiles.files?.length || 0} files`}
+          {wsConnected && ' • 🟢 Connected'}
         </Typography>
         <Button
           variant="contained"
-          startIcon={
-            isTypingMode ? (
-              <Box
-                component="input"
-                type="text"
-                sx={{
-                  fontSize: '0.875rem',
-                  p: '8px 12px',
-                  bgcolor: 'rgba(255,255,255,0.05)',
-                  border: `1px solid ${COLORS.primary.border}`,
-                  borderRadius: '8px',
-                  color: 'white',
-                  outline: 'none',
-                  width: '100%',
-                  '&:focus': {
-                    borderColor: COLORS.primary.start,
-                  },
-                }}
-                placeholder="Type here..."
-              />
-            ) : (
-              <Mic fontSize="small" />
-            )
-          }
-          onClick={isTypingMode ? () => setIsTypingMode(false) : toggleListening}
-          disabled={isListening}
+          startIcon={<Mic fontSize="small" />}
+          onClick={toggleListening}
+          disabled={isListening || isProcessing || isGenerating}
           sx={{
             background: GRADIENT_PRIMARY,
             borderRadius: '40px',
@@ -1229,11 +1769,17 @@ Try any of these commands!`;
             '&:hover': { background: GRADIENT_PRIMARY, opacity: 0.9 },
           }}
         >
-          {isListening ? 'Listening...' : isTypingMode ? 'Use Voice Instead' : 'Voice Command'}
+          {isGenerating
+            ? 'Generating...'
+            : isListening
+              ? 'Listening...'
+              : isProcessing
+                ? 'Processing...'
+                : 'Voice Command'}
         </Button>
       </Box>
 
-      {/* Global Animation Styles */}
+      {/* Global Styles */}
       <style>{`
         @keyframes pulse-ring {
           0% { box-shadow: 0 0 0 0 rgba(62, 214, 124, 0.4); }
@@ -1249,7 +1795,7 @@ Try any of these commands!`;
         }
       `}</style>
 
-      {/* Snackbar Notifications */}
+      {/* Snackbar */}
       <Snackbar
         open={snackbar.open}
         autoHideDuration={4000}
